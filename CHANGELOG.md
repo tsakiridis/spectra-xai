@@ -28,6 +28,24 @@ All notable changes to this project are documented here. The decisions behind
   sharing the axis), `excluded_bands`, `cmap`. Follows the plot contract and the
   wavenumber axis direction. New section in `modelInterpretability.ipynb`.
 
+- **Random and Bayesian hyperparameter search**: `StandardModel(...,
+  search="random" | "bayes", n_iter=50, search_space=None, sampler=None)`. Grid
+  search stays the default and is unchanged. Every tunable model has a default
+  search space covering its default grid (log scale where the grid is
+  log-spaced; PLS `n_components` and SVR `gamma` derived from the data). Spaces
+  use simple entries (`("log", lo, hi)`, `("int", lo, hi)`, lists of choices) or
+  Optuna/SciPy distributions; a custom `grid_search_hyperparameters` is read as
+  choices.
+- `spectraxai.search.BayesianSearchCV`: Optuna-based search with
+  cross-validation for any scikit-learn estimator, TPE by default (any Optuna
+  sampler via `sampler=`), stopping unpromising trials after each fold (median
+  pruning). Needs the new optional extra: `pip install spectraxai[optuna]`.
+- `StandardModel.search_results_` (one row per candidate) and `search_space_`
+  (`param_grid_` is kept as an alias).
+- New example `hyperparameter_search.py`: grid vs random vs Bayesian search
+  for SVR.
+- CI: tests run with the `optuna` extra, plus a job without it.
+
 ### Changed
 - `SpectralPreprocessingOptions` is typed `dict[str, Any]` (options may be floats).
 

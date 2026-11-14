@@ -68,6 +68,7 @@
                     <li><a href="spectraxai/models.html">models</a></li>
                     <li><a href="spectraxai/plotting.html">plotting</a></li>
                     <li><a href="spectraxai/preprocessing.html">preprocessing</a></li>
+                    <li><a href="spectraxai/search.html">search</a></li>
                     <li><a href="spectraxai/selection.html">selection</a></li>
                     <li><a href="spectraxai/spectra.html">spectra</a></li>
                     <li><a href="spectraxai/utils.html">utils</a></li>
@@ -111,6 +112,7 @@ Savitzky–Golay and fractional-order derivatives, continuum removal, ...)</li>
 XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP or any
 scikit-learn regressor</li>
 <li><code><a href="spectraxai/selection.html">spectraxai.selection</a></code>: wavelength selection (RFE/RFECV, VIP, pre-hoc rankings)</li>
+<li><code><a href="spectraxai/search.html">spectraxai.search</a></code>: random and Bayesian (Optuna) hyperparameter search</li>
 <li><code><a href="spectraxai/explain.html">spectraxai.explain</a></code>: pre- and post-hoc explanations and their plots</li>
 <li><code><a href="spectraxai/plotting.html">spectraxai.plotting</a></code>: the conventions shared by all plots</li>
 <li><code><a href="spectraxai/data.html">spectraxai.data</a></code>: the bundled example datasets (vis–NIR and MIR soil spectra)</li>
@@ -183,7 +185,7 @@ order from 0 to 2; optional <code>h</code> (band step, default 1) and <code>n_te
 memory). Stateless, so it works in <code>Dataset.preprocess</code>, <code>fit_and_predict</code>,
 <code>SpectralPreprocessor</code> and scikit-learn pipelines. New example
 <code>fractional_derivatives.py</code> chooses the order by cross-validation.</li>
-<li><strong>Importance strip plot</strong>: <code>plot_importance_strip</code> on <code>PreHocAnalysis</code> and
+<li><p><strong>Importance strip plot</strong>: <code>plot_importance_strip</code> on <code>PreHocAnalysis</code> and
 <code>PostHocAnalysis</code> draws importance as a strip along the spectrum, darker where
 a wavelength matters more. It takes an array, a fitted model, a selector or
 boolean mask, a <code>FeatureRanking</code> (pre-hoc), or a dict of these for stacked,
@@ -191,7 +193,24 @@ labelled rows (one per method or output). Line mode (<code>top_k=</code>, <code>
 or any selector or mask) draws only the chosen wavelengths as dark lines.
 Options: <code>shared_scale</code>, <code>colorbar</code>, <code>with_spectrum</code> (mean spectrum above,
 sharing the axis), <code>excluded_bands</code>, <code>cmap</code>. Follows the plot contract and the
-wavenumber axis direction. New section in <code>modelInterpretability.ipynb</code>.</li>
+wavenumber axis direction. New section in <code>modelInterpretability.ipynb</code>.</p></li>
+<li><p><strong>Random and Bayesian hyperparameter search</strong>: <code>StandardModel(...,
+search="random" | "bayes", n_iter=50, search_space=None, sampler=None)</code>. Grid
+search stays the default and is unchanged. Every tunable model has a default
+search space covering its default grid (log scale where the grid is
+log-spaced; PLS <code>n_components</code> and SVR <code>gamma</code> derived from the data). Spaces
+use simple entries (<code>("log", lo, hi)</code>, <code>("int", lo, hi)</code>, lists of choices) or
+Optuna/SciPy distributions; a custom <code>grid_search_hyperparameters</code> is read as
+choices.</p></li>
+<li><code><a href="spectraxai/search.html#BayesianSearchCV">spectraxai.search.BayesianSearchCV</a></code>: Optuna-based search with
+cross-validation for any scikit-learn estimator, TPE by default (any Optuna
+sampler via <code>sampler=</code>), stopping unpromising trials after each fold (median
+pruning). Needs the new optional extra: <code>pip install spectraxai[optuna]</code>.</li>
+<li><code>StandardModel.search_results_</code> (one row per candidate) and <code>search_space_</code>
+(<code>param_grid_</code> is kept as an alias).</li>
+<li>New example <code>hyperparameter_search.py</code>: grid vs random vs Bayesian search
+for SVR.</li>
+<li>CI: tests run with the <code>optuna</code> extra, plus a job without it.</li>
 </ul>
 
 <h3 id="changed">Changed</h3>
@@ -437,55 +456,56 @@ example scripts and notebooks.</li>
 </span><span id="L-23"><a href="#L-23"><span class="linenos">23</span></a><span class="sd">   XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP or any</span>
 </span><span id="L-24"><a href="#L-24"><span class="linenos">24</span></a><span class="sd">   scikit-learn regressor</span>
 </span><span id="L-25"><a href="#L-25"><span class="linenos">25</span></a><span class="sd"> - `spectraxai.selection`: wavelength selection (RFE/RFECV, VIP, pre-hoc rankings)</span>
-</span><span id="L-26"><a href="#L-26"><span class="linenos">26</span></a><span class="sd"> - `spectraxai.explain`: pre- and post-hoc explanations and their plots</span>
-</span><span id="L-27"><a href="#L-27"><span class="linenos">27</span></a><span class="sd"> - `spectraxai.plotting`: the conventions shared by all plots</span>
-</span><span id="L-28"><a href="#L-28"><span class="linenos">28</span></a><span class="sd"> - `spectraxai.data`: the bundled example datasets (vis–NIR and MIR soil spectra)</span>
-</span><span id="L-29"><a href="#L-29"><span class="linenos">29</span></a>
-</span><span id="L-30"><a href="#L-30"><span class="linenos">30</span></a><span class="sd"># Quickstart</span>
-</span><span id="L-31"><a href="#L-31"><span class="linenos">31</span></a>
-</span><span id="L-32"><a href="#L-32"><span class="linenos">32</span></a><span class="sd">As an example, we quickly develop a PLS model for a dataset and</span>
-</span><span id="L-33"><a href="#L-33"><span class="linenos">33</span></a><span class="sd">plot the feature importance.</span>
-</span><span id="L-34"><a href="#L-34"><span class="linenos">34</span></a><span class="sd">```python</span>
-</span><span id="L-35"><a href="#L-35"><span class="linenos">35</span></a><span class="sd">"""</span>
-</span><span id="L-36"><a href="#L-36"><span class="linenos">36</span></a><span class="sd">A small `spectraxai` example.</span>
-</span><span id="L-37"><a href="#L-37"><span class="linenos">37</span></a><span class="sd">"""</span>
-</span><span id="L-38"><a href="#L-38"><span class="linenos">38</span></a>
-</span><span id="L-39"><a href="#L-39"><span class="linenos">39</span></a><span class="sd"># Load the dataset</span>
-</span><span id="L-40"><a href="#L-40"><span class="linenos">40</span></a>
-</span><span id="L-41"><a href="#L-41"><span class="linenos">41</span></a><span class="sd">from spectraxai.data import load_GR_SSL</span>
-</span><span id="L-42"><a href="#L-42"><span class="linenos">42</span></a><span class="sd">dataset = load_GR_SSL()</span>
-</span><span id="L-43"><a href="#L-43"><span class="linenos">43</span></a>
-</span><span id="L-44"><a href="#L-44"><span class="linenos">44</span></a><span class="sd"># Apply SG1 on the spectra and train &amp; test a PLS model</span>
-</span><span id="L-45"><a href="#L-45"><span class="linenos">45</span></a>
-</span><span id="L-46"><a href="#L-46"><span class="linenos">46</span></a><span class="sd">from spectraxai.models import Model, StandardModel</span>
-</span><span id="L-47"><a href="#L-47"><span class="linenos">47</span></a><span class="sd">from spectraxai.spectra import SpectralPreprocessing</span>
-</span><span id="L-48"><a href="#L-48"><span class="linenos">48</span></a><span class="sd">from spectraxai.dataset import DatasetSplit</span>
-</span><span id="L-49"><a href="#L-49"><span class="linenos">49</span></a>
-</span><span id="L-50"><a href="#L-50"><span class="linenos">50</span></a><span class="sd">idx_trn, idx_tst = dataset.train_test_split(DatasetSplit.KENNARD_STONE, 0.8)</span>
-</span><span id="L-51"><a href="#L-51"><span class="linenos">51</span></a><span class="sd">pls = StandardModel(Model.PLS, random_state=0)</span>
-</span><span id="L-52"><a href="#L-52"><span class="linenos">52</span></a>
-</span><span id="L-53"><a href="#L-53"><span class="linenos">53</span></a><span class="sd">results = pls.fit_and_predict(</span>
-</span><span id="L-54"><a href="#L-54"><span class="linenos">54</span></a><span class="sd">    dataset,</span>
-</span><span id="L-55"><a href="#L-55"><span class="linenos">55</span></a><span class="sd">    preprocess=(SpectralPreprocessing.SG1, {"window_length": 7, "polyorder": 3}),</span>
-</span><span id="L-56"><a href="#L-56"><span class="linenos">56</span></a><span class="sd">    idx_trn=idx_trn</span>
-</span><span id="L-57"><a href="#L-57"><span class="linenos">57</span></a><span class="sd">)</span>
-</span><span id="L-58"><a href="#L-58"><span class="linenos">58</span></a><span class="sd">results[["RMSE", "R2", "RPIQ", "best_hyperparameters"]]</span>
-</span><span id="L-59"><a href="#L-59"><span class="linenos">59</span></a>
-</span><span id="L-60"><a href="#L-60"><span class="linenos">60</span></a><span class="sd"># Plot the feature importance (VIP) over the mean spectrum</span>
-</span><span id="L-61"><a href="#L-61"><span class="linenos">61</span></a>
-</span><span id="L-62"><a href="#L-62"><span class="linenos">62</span></a><span class="sd">from spectraxai.explain import PostHocAnalysis</span>
-</span><span id="L-63"><a href="#L-63"><span class="linenos">63</span></a>
-</span><span id="L-64"><a href="#L-64"><span class="linenos">64</span></a><span class="sd">xai = PostHocAnalysis(dataset.preprocess(</span>
-</span><span id="L-65"><a href="#L-65"><span class="linenos">65</span></a><span class="sd">    (SpectralPreprocessing.SG1, {"window_length": 7, "polyorder": 3})</span>
-</span><span id="L-66"><a href="#L-66"><span class="linenos">66</span></a><span class="sd">))</span>
-</span><span id="L-67"><a href="#L-67"><span class="linenos">67</span></a><span class="sd">ax, importance_ax = xai.plot_importance_spectrum(results.iloc[0]["feature_importance"])</span>
-</span><span id="L-68"><a href="#L-68"><span class="linenos">68</span></a><span class="sd">```</span>
-</span><span id="L-69"><a href="#L-69"><span class="linenos">69</span></a>
-</span><span id="L-70"><a href="#L-70"><span class="linenos">70</span></a><span class="sd">Every plot accepts a matplotlib ``ax`` (or ``axes``), so it can be drawn into your</span>
-</span><span id="L-71"><a href="#L-71"><span class="linenos">71</span></a><span class="sd">own figures; see `spectraxai.plotting`.</span>
-</span><span id="L-72"><a href="#L-72"><span class="linenos">72</span></a>
-</span><span id="L-73"><a href="#L-73"><span class="linenos">73</span></a><span class="sd">.. include:: ../CHANGELOG.md</span>
-</span><span id="L-74"><a href="#L-74"><span class="linenos">74</span></a><span class="sd">'''</span>
+</span><span id="L-26"><a href="#L-26"><span class="linenos">26</span></a><span class="sd"> - `spectraxai.search`: random and Bayesian (Optuna) hyperparameter search</span>
+</span><span id="L-27"><a href="#L-27"><span class="linenos">27</span></a><span class="sd"> - `spectraxai.explain`: pre- and post-hoc explanations and their plots</span>
+</span><span id="L-28"><a href="#L-28"><span class="linenos">28</span></a><span class="sd"> - `spectraxai.plotting`: the conventions shared by all plots</span>
+</span><span id="L-29"><a href="#L-29"><span class="linenos">29</span></a><span class="sd"> - `spectraxai.data`: the bundled example datasets (vis–NIR and MIR soil spectra)</span>
+</span><span id="L-30"><a href="#L-30"><span class="linenos">30</span></a>
+</span><span id="L-31"><a href="#L-31"><span class="linenos">31</span></a><span class="sd"># Quickstart</span>
+</span><span id="L-32"><a href="#L-32"><span class="linenos">32</span></a>
+</span><span id="L-33"><a href="#L-33"><span class="linenos">33</span></a><span class="sd">As an example, we quickly develop a PLS model for a dataset and</span>
+</span><span id="L-34"><a href="#L-34"><span class="linenos">34</span></a><span class="sd">plot the feature importance.</span>
+</span><span id="L-35"><a href="#L-35"><span class="linenos">35</span></a><span class="sd">```python</span>
+</span><span id="L-36"><a href="#L-36"><span class="linenos">36</span></a><span class="sd">"""</span>
+</span><span id="L-37"><a href="#L-37"><span class="linenos">37</span></a><span class="sd">A small `spectraxai` example.</span>
+</span><span id="L-38"><a href="#L-38"><span class="linenos">38</span></a><span class="sd">"""</span>
+</span><span id="L-39"><a href="#L-39"><span class="linenos">39</span></a>
+</span><span id="L-40"><a href="#L-40"><span class="linenos">40</span></a><span class="sd"># Load the dataset</span>
+</span><span id="L-41"><a href="#L-41"><span class="linenos">41</span></a>
+</span><span id="L-42"><a href="#L-42"><span class="linenos">42</span></a><span class="sd">from spectraxai.data import load_GR_SSL</span>
+</span><span id="L-43"><a href="#L-43"><span class="linenos">43</span></a><span class="sd">dataset = load_GR_SSL()</span>
+</span><span id="L-44"><a href="#L-44"><span class="linenos">44</span></a>
+</span><span id="L-45"><a href="#L-45"><span class="linenos">45</span></a><span class="sd"># Apply SG1 on the spectra and train &amp; test a PLS model</span>
+</span><span id="L-46"><a href="#L-46"><span class="linenos">46</span></a>
+</span><span id="L-47"><a href="#L-47"><span class="linenos">47</span></a><span class="sd">from spectraxai.models import Model, StandardModel</span>
+</span><span id="L-48"><a href="#L-48"><span class="linenos">48</span></a><span class="sd">from spectraxai.spectra import SpectralPreprocessing</span>
+</span><span id="L-49"><a href="#L-49"><span class="linenos">49</span></a><span class="sd">from spectraxai.dataset import DatasetSplit</span>
+</span><span id="L-50"><a href="#L-50"><span class="linenos">50</span></a>
+</span><span id="L-51"><a href="#L-51"><span class="linenos">51</span></a><span class="sd">idx_trn, idx_tst = dataset.train_test_split(DatasetSplit.KENNARD_STONE, 0.8)</span>
+</span><span id="L-52"><a href="#L-52"><span class="linenos">52</span></a><span class="sd">pls = StandardModel(Model.PLS, random_state=0)</span>
+</span><span id="L-53"><a href="#L-53"><span class="linenos">53</span></a>
+</span><span id="L-54"><a href="#L-54"><span class="linenos">54</span></a><span class="sd">results = pls.fit_and_predict(</span>
+</span><span id="L-55"><a href="#L-55"><span class="linenos">55</span></a><span class="sd">    dataset,</span>
+</span><span id="L-56"><a href="#L-56"><span class="linenos">56</span></a><span class="sd">    preprocess=(SpectralPreprocessing.SG1, {"window_length": 7, "polyorder": 3}),</span>
+</span><span id="L-57"><a href="#L-57"><span class="linenos">57</span></a><span class="sd">    idx_trn=idx_trn</span>
+</span><span id="L-58"><a href="#L-58"><span class="linenos">58</span></a><span class="sd">)</span>
+</span><span id="L-59"><a href="#L-59"><span class="linenos">59</span></a><span class="sd">results[["RMSE", "R2", "RPIQ", "best_hyperparameters"]]</span>
+</span><span id="L-60"><a href="#L-60"><span class="linenos">60</span></a>
+</span><span id="L-61"><a href="#L-61"><span class="linenos">61</span></a><span class="sd"># Plot the feature importance (VIP) over the mean spectrum</span>
+</span><span id="L-62"><a href="#L-62"><span class="linenos">62</span></a>
+</span><span id="L-63"><a href="#L-63"><span class="linenos">63</span></a><span class="sd">from spectraxai.explain import PostHocAnalysis</span>
+</span><span id="L-64"><a href="#L-64"><span class="linenos">64</span></a>
+</span><span id="L-65"><a href="#L-65"><span class="linenos">65</span></a><span class="sd">xai = PostHocAnalysis(dataset.preprocess(</span>
+</span><span id="L-66"><a href="#L-66"><span class="linenos">66</span></a><span class="sd">    (SpectralPreprocessing.SG1, {"window_length": 7, "polyorder": 3})</span>
+</span><span id="L-67"><a href="#L-67"><span class="linenos">67</span></a><span class="sd">))</span>
+</span><span id="L-68"><a href="#L-68"><span class="linenos">68</span></a><span class="sd">ax, importance_ax = xai.plot_importance_spectrum(results.iloc[0]["feature_importance"])</span>
+</span><span id="L-69"><a href="#L-69"><span class="linenos">69</span></a><span class="sd">```</span>
+</span><span id="L-70"><a href="#L-70"><span class="linenos">70</span></a>
+</span><span id="L-71"><a href="#L-71"><span class="linenos">71</span></a><span class="sd">Every plot accepts a matplotlib ``ax`` (or ``axes``), so it can be drawn into your</span>
+</span><span id="L-72"><a href="#L-72"><span class="linenos">72</span></a><span class="sd">own figures; see `spectraxai.plotting`.</span>
+</span><span id="L-73"><a href="#L-73"><span class="linenos">73</span></a>
+</span><span id="L-74"><a href="#L-74"><span class="linenos">74</span></a><span class="sd">.. include:: ../CHANGELOG.md</span>
+</span><span id="L-75"><a href="#L-75"><span class="linenos">75</span></a><span class="sd">'''</span>
 </span></pre></div>
 
 

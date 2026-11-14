@@ -14,7 +14,7 @@ keeps working unchanged.**
 
 ## Status
 
-Phases 1 (fractional-order derivatives) and 2 (importance strip plot) are implemented; phases 3–7 to follow.
+Phases 1 (fractional-order derivatives), 2 (importance strip plot) and 3 (random and Bayesian search) are implemented; phases 4–7 to follow.
 
 ## Ground rules
 

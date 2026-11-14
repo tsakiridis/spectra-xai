@@ -28,7 +28,7 @@ from sklearn.neighbors import KNeighborsRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import r2_score
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import Bunch
@@ -36,6 +36,7 @@ from cubist import Cubist
 import xgboost as xgb
 
 from spectraxai.exceptions import SpectraXAIValueError
+from spectraxai.search import BayesianSearchCV, random_distributions
 from spectraxai.utils import metrics, sigest
 from spectraxai.spectra import SpectralPreprocessing, SpectralPreprocessingSequence
 from spectraxai.dataset import Dataset
@@ -98,6 +99,35 @@ _DEFAULT_GRIDS: dict[Model, dict[str, Any]] = {
 }
 """Default grid searched per model (PLS n_components and SVR gamma depend on the
 dataset and are added at fit time; GPR tunes its kernel itself)."""
+
+_DEFAULT_SPACES: dict[Model, dict[str, Any]] = {
+    Model.SVR: {"C": ("log", 2.0**-2, 2.0**9), "epsilon": ("log", 0.01, 0.5)},
+    Model.RF: {
+        "max_features": [1.0, "sqrt", "log2"],
+        "n_estimators": ("int", 50, 200),
+    },
+    Model.CUBIST: {"n_committees": ("int", 1, 20), "neighbors": ("int", 1, 9)},
+    Model.XGBOOST: {
+        "max_depth": ("int", 2, 10),
+        "learning_rate": ("log", 0.01, 0.3),
+        "n_estimators": ("int", 10, 100),
+        "colsample_bytree": ("float", 0.3, 1.0),
+        "alpha": ("float", 0.0, 10.0),
+    },
+    Model.RIDGE: {"alpha": ("log", 1e-4, 1e3)},
+    Model.LASSO: {"alpha": ("log", 1e-5, 1.0)},
+    Model.ELASTIC_NET: {"alpha": ("log", 1e-5, 1.0), "l1_ratio": ("float", 0.1, 0.9)},
+    Model.KNN: {"n_neighbors": ("int", 3, 15), "weights": ["uniform", "distance"]},
+    Model.MLP: {
+        "hidden_layer_sizes": [(50,), (100,), (50, 50)],
+        "alpha": ("log", 1e-4, 1.0),
+    },
+}
+"""Default space of random and Bayesian search per model, covering the ranges of
+`_DEFAULT_GRIDS` (on a log scale where the grid is log-spaced). As for the grids,
+PLS n_components and SVR gamma are added at fit time from the dataset."""
+
+_SEARCHES = ("grid", "random", "bayes")
 
 _SCALED_MODELS = frozenset(
     {
@@ -185,9 +215,32 @@ class StandardModel(RegressorMixin, BaseEstimator):
     """Seed passed to stochastic models (RF, XGBoost, Cubist) and to the SVR gamma
     estimation. None keeps the behaviour of earlier versions."""
 
+    search: str
+    """The hyperparameter search strategy: ``"grid"``, ``"random"`` or
+    ``"bayes"``."""
+
+    n_iter: int
+    """Number of candidates of random and Bayesian search."""
+
+    search_space: dict[str, Any] | None
+    """The space of random and Bayesian search (see `spectraxai.search`), or None
+    for the model's default space."""
+
+    sampler: Any
+    """The Optuna sampler of Bayesian search, or None for TPE."""
+
+    search_space_: dict[str, Any] | None
+    """The grid or space actually searched by the last call to `fit`, including
+    any dataset-dependent entries (SVR gamma, PLS n_components)."""
+
     param_grid_: dict[str, Any] | None
-    """The grid actually searched by the last call to `fit`, including any
-    dataset-dependent entries (SVR gamma, PLS n_components)."""
+    """Alias of `search_space_`, kept for compatibility."""
+
+    search_results_: pandas.DataFrame | None
+    """One row per candidate of the last search: its hyperparameters
+    (``param_<name>``), ``mean_test_score`` and ``std_test_score`` (and, for
+    Bayesian search, ``n_folds`` and ``state``, ``"pruned"`` for trials stopped
+    early). None when no search took place."""
 
     pipeline_: Pipeline | None
     """The fitted prediction pipeline: the SVR scaler (if any) followed by
@@ -203,6 +256,10 @@ class StandardModel(RegressorMixin, BaseEstimator):
         cv: int | Iterable[tuple[np.ndarray, np.ndarray]] = 5,
         random_state: int | None = None,
         n_jobs: int | None = -1,
+        search: str = "grid",
+        n_iter: int = 50,
+        search_space: dict[str, Any] | None = None,
+        sampler: Any = None,
     ) -> None:
         """Initialize StandardModel class for a `Model` and its hyperparameters.
 
@@ -237,6 +294,33 @@ class StandardModel(RegressorMixin, BaseEstimator):
             Number of parallel jobs of the grid search. Defaults to -1 (all
             processors).
 
+        search: `str`, optional
+            How hyperparameters are tuned when no ``init_hyperparameters`` are
+            given:
+
+            - ``"grid"`` (default): every combination of
+              ``grid_search_hyperparameters`` (`sklearn.model_selection.GridSearchCV`);
+            - ``"random"``: ``n_iter`` random candidates from ``search_space``
+              (`sklearn.model_selection.RandomizedSearchCV`);
+            - ``"bayes"``: ``n_iter`` Optuna trials over ``search_space``
+              (`spectraxai.search.BayesianSearchCV`; needs
+              ``pip install spectraxai[optuna]``).
+
+        n_iter: `int`, optional
+            Number of candidates of random and Bayesian search. Defaults to 50.
+
+        search_space: `dict`, optional
+            The space of random and Bayesian search: ranges such as
+            ``("log", 0.01, 100)`` or ``("int", 1, 20)``, lists of choices, or
+            Optuna/SciPy distributions (see `spectraxai.search`). Defaults to
+            the model's default space, or, if you passed
+            ``grid_search_hyperparameters``, to those (each list read as choices).
+
+        sampler: `optuna.samplers.BaseSampler`, optional
+            The Optuna sampler of Bayesian search (e.g.
+            ``optuna.samplers.GPSampler()``). Defaults to TPE seeded by
+            ``random_state``.
+
         """
         if (
             init_hyperparameters
@@ -269,13 +353,19 @@ class StandardModel(RegressorMixin, BaseEstimator):
         self.cv = cv
         self.random_state = random_state
         self.n_jobs = n_jobs
+        self.search = search
+        self.n_iter = n_iter
+        self.search_space = search_space
+        self.sampler = sampler
         self.training_time = None
         self.testing_time = None
         self.best_model = None
         self.best_hyperparameters = None
         self.best_score = None
         self.scaler = None
+        self.search_space_ = None
         self.param_grid_ = None
+        self.search_results_ = None
         self.pipeline_ = None
 
     def __sklearn_is_fitted__(self) -> bool:
@@ -424,10 +514,10 @@ class StandardModel(RegressorMixin, BaseEstimator):
     ) -> "StandardModel":
         """Trains the model on a given dataset (or on ``X, y``).
 
-        If you didn't supply the `init_hyperparameters` option to the constructor, then
-        a grid search optimization process takes place as follows:
-        Using the sklearn.model_selection.GridSearchCV approach, a grid search using a
-        cross-validation splitting strategy specified by cv is performed. After the
+        If you didn't supply the `init_hyperparameters` option to the constructor, the
+        hyperparameters are tuned first, using the cross-validation splitting
+        strategy specified by cv: a grid search (`sklearn.model_selection.GridSearchCV`)
+        by default, or a random or Bayesian search (see ``search``). After the
         optimal hyperparameters are defined, the model is then retrained on the whole
         dataset.
 
@@ -466,6 +556,15 @@ class StandardModel(RegressorMixin, BaseEstimator):
             cv, y = y, None
         dataset = self._as_dataset(dataset, y)
         cv = self.cv if cv is None else cv
+        if self.search not in _SEARCHES:
+            raise SpectraXAIValueError(
+                f"search should be one of {_SEARCHES}, got {self.search!r}"
+            )
+        if self.search == "grid" and self.search_space is not None:
+            raise SpectraXAIValueError(
+                'search_space is used by search="random" or "bayes"; for a grid '
+                "search pass grid_search_hyperparameters"
+            )
         if self.model in _SINGLE_OUTPUT_MODELS and dataset.n_outputs > 1:
             raise SpectraXAIValueError(
                 "Cannot create a multi-output model. "
@@ -482,52 +581,111 @@ class StandardModel(RegressorMixin, BaseEstimator):
             self.scaler = None
             X_train = dataset.X
 
-        # If hyperparameters are passed, use them; otherwise run grid search
+        y_train = np.squeeze(dataset.Y, axis=1) if dataset.n_outputs == 1 else dataset.Y
+        self.search_results_ = None
+        # If hyperparameters are passed, use them; otherwise search for them
         if len(self.init_hyperparameters) != 0:
             self.best_model = self._new_estimator(grid_search=False).set_params(
                 **self.init_hyperparameters
             )
-            self.param_grid_ = None
+            self.search_space_ = self.param_grid_ = None
             self.best_score = None
             trn_t0 = time.time()
-            self.best_model.fit(
-                X_train,
-                np.squeeze(dataset.Y, axis=1) if dataset.n_outputs == 1 else dataset.Y,
-            )
+            self.best_model.fit(X_train, y_train)
             self.best_hyperparameters = dict(self.init_hyperparameters)
             trn_t1 = time.time()
         else:
-            # Work on a copy so that dataset-dependent entries computed here do not
-            # leak into later calls (e.g. other folds or pre-processings).
-            param_grid = dict(self.grid_search_hyperparameters)
-            if self.model == Model.SVR and "gamma" not in param_grid:
-                gamma = sigest(X_train, random_state=self.random_state)
-                param_grid["gamma"] = np.linspace(gamma[0], gamma[2], num=5)
-            elif self.model == Model.PLS and "n_components" not in param_grid:
-                param_grid["n_components"] = np.arange(1, min(100, X_train.shape[1]), 1)
-            self.param_grid_ = param_grid
+            space = (
+                self._grid(X_train)
+                if self.search == "grid"
+                else self._search_space(X_train)
+            )
+            self.search_space_ = self.param_grid_ = space
+            estimator = self._new_estimator(grid_search=True)
             trn_t0 = time.time()
-            grid_search = GridSearchCV(
-                estimator=self._new_estimator(grid_search=True),
-                param_grid=param_grid,
-                cv=cv,
-                n_jobs=self.n_jobs,
-                verbose=0,
-            )
-            grid_search.fit(
-                X_train,
-                np.squeeze(dataset.Y, axis=1) if dataset.n_outputs == 1 else dataset.Y,
-            )
+            if self.search == "bayes" and space:
+                search: Any = BayesianSearchCV(
+                    estimator,
+                    space,
+                    n_iter=self.n_iter,
+                    cv=cv,
+                    sampler=self.sampler,
+                    random_state=self.random_state,
+                )
+            elif self.search == "random" and space:
+                search = RandomizedSearchCV(
+                    estimator,
+                    random_distributions(space),
+                    n_iter=self.n_iter,
+                    cv=cv,
+                    n_jobs=self.n_jobs,
+                    random_state=self.random_state,
+                )
+            else:
+                search = GridSearchCV(
+                    estimator=estimator,
+                    param_grid=space,
+                    cv=cv,
+                    n_jobs=self.n_jobs,
+                    verbose=0,
+                )
+            search.fit(X_train, y_train)
             trn_t1 = time.time()
-            self.best_model = grid_search.best_estimator_
-            self.best_hyperparameters = grid_search.best_params_
-            self.best_score = grid_search.best_score_
+            self.best_model = search.best_estimator_
+            self.best_hyperparameters = search.best_params_
+            self.best_score = search.best_score_
+            self.search_results_ = self._results_table(search)
         self.training_time = trn_t1 - trn_t0
         steps: list[tuple[str, Any]] = [("model", self.best_model)]
         if self.scaler is not None:
             steps.insert(0, ("scaler", self.scaler))
         self.pipeline_ = Pipeline(steps)
         return self
+
+    def _grid(self, X_train: np.ndarray) -> dict[str, Any]:
+        """The grid of a grid search, completed with dataset-dependent entries."""
+        # Work on a copy so that dataset-dependent entries computed here do not
+        # leak into later calls (e.g. other folds or pre-processings).
+        param_grid = dict(self.grid_search_hyperparameters)
+        if self.model == Model.SVR and "gamma" not in param_grid:
+            gamma = sigest(X_train, random_state=self.random_state)
+            param_grid["gamma"] = np.linspace(gamma[0], gamma[2], num=5)
+        elif self.model == Model.PLS and "n_components" not in param_grid:
+            param_grid["n_components"] = np.arange(1, min(100, X_train.shape[1]), 1)
+        return param_grid
+
+    def _search_space(self, X_train: np.ndarray) -> dict[str, Any]:
+        """The space of a random or Bayesian search, with dataset-dependent ranges.
+
+        Uses ``search_space`` if given, else custom
+        ``grid_search_hyperparameters`` (each list read as choices), else the
+        model's default space.
+
+        """
+        if self.search_space is not None:
+            space = dict(self.search_space)
+        elif self.grid_search_hyperparameters and not _is_default_grid(
+            self.model, self.grid_search_hyperparameters
+        ):
+            space = dict(self.grid_search_hyperparameters)
+        else:
+            space = dict(_DEFAULT_SPACES.get(self.model, {}))
+        if self.model == Model.SVR and "gamma" not in space:
+            gamma = sigest(X_train, random_state=self.random_state)
+            space["gamma"] = ("log", float(gamma[0]), float(gamma[2]))
+        elif self.model == Model.PLS and "n_components" not in space:
+            space["n_components"] = ("int", 1, max(1, min(100, X_train.shape[1]) - 1))
+        return space
+
+    @staticmethod
+    def _results_table(search: Any) -> pandas.DataFrame:
+        """One row per candidate of a fitted search."""
+        if isinstance(search, BayesianSearchCV):
+            return search.results_
+        results = pandas.DataFrame(search.cv_results_)
+        columns = [c for c in results.columns if c.startswith("param_")]
+        columns += ["mean_test_score", "std_test_score", "rank_test_score"]
+        return cast(pandas.DataFrame, results[columns])
 
     def predict(self, X_test: np.ndarray | Dataset | Any) -> np.ndarray:
         """Predict using the best_model from a new unknown input.
