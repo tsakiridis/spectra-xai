@@ -1,0 +1,70 @@
+# SPDX-FileCopyrightText: 2026 Nikos Tsakiridis <tsakirin@auth.gr>
+#
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "spectraxai"
+version = "1.2.0"
+description = "eXplainable Artificial Intelligence for spectral datasets"
+readme = "README.md"
+license = "GPL-3.0-or-later"
+requires-python = ">=3.13"
+dependencies = [
+    "pandas",
+    "numpy",
+    "scipy",
+    "scikit-learn>=1.6",
+    "matplotlib",
+    "cubist>=0.1.0",
+    "seaborn",
+    "sage-importance",
+    "kennard-stone",
+    "xgboost",
+]
+
+[project.optional-dependencies]
+shap = ["shap>=0.46"]
+dev = [
+    "shap>=0.46",
+    "flake8",
+    "pytest",
+    "pytest-cov",
+    "pytest-html",
+    "hypothesis",
+    "nbmake",
+    "pyright",
+    "black",
+    "ipykernel",
+    "pdoc",
+    "docformatter",
+    "pydocstyle",
+    "pre-commit",
+]
+
+[project.urls]
+Homepage = "https://github.com/tsakiridis/spectra-xai"
+Documentation = "https://tsakiridis.github.io/spectra-xai/spectraxai.html"
+Issues = "https://github.com/tsakiridis/spectra-xai/issues"
+
+[tool.setuptools.packages.find]
+include = ["spectraxai", "spectraxai.*"]
+
+[tool.setuptools.package-data]
+spectraxai = ["py.typed", "data/SSL_GR.csv", "data/MIR_GB_CS2007.csv"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: integration tests on the packaged SSL dataset",
+]
+
+[tool.coverage.run]
+source = ["spectraxai"]
+
+[tool.coverage.report]
+fail_under = 85
+show_missing = true
