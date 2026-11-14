@@ -9,6 +9,19 @@ SPDX-License-Identifier: GPL-3.0-or-later
 All notable changes to this project are documented here. The decisions behind
 1.2.0 are in [ROADMAP.md](https://github.com/tsakiridis/spectra-xai/blob/main/ROADMAP.md).
 
+## [Unreleased] — 1.3.0
+
+### Added
+- **Fractional-order derivatives**: `SpectralPreprocessing.FD` and `Spectra.fd`
+  (Grünwald–Letnikov), e.g. `(SpectralPreprocessing.FD, {"order": 0.5})`. Any
+  order from 0 to 2; optional `h` (band step, default 1) and `n_terms` (truncated
+  memory). Stateless, so it works in `Dataset.preprocess`, `fit_and_predict`,
+  `SpectralPreprocessor` and scikit-learn pipelines. New example
+  `fractional_derivatives.py` chooses the order by cross-validation.
+
+### Changed
+- `SpectralPreprocessingOptions` is typed `dict[str, Any]` (options may be floats).
+
 ## [1.2.0] — 2026-11-14
 
 ### Added

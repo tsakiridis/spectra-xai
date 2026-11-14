@@ -17,7 +17,7 @@ A library to easily develop XAI models for spectral datasets.
  - `spectraxai.dataset`: the `Dataset` (spectra, outputs, wavelengths), scaling and
    splitting (random, Kennard–Stone, cLHS, cross-validation, stratified)
  - `spectraxai.spectra`: spectral pre-processing (absorbance, SNV, MSC,
-   Savitzky–Golay, continuum removal, ...)
+   Savitzky–Golay and fractional-order derivatives, continuum removal, ...)
  - `spectraxai.preprocessing`: pre-processing as a scikit-learn transformer
  - `spectraxai.models`: `StandardModel`, training and tuning PLS, SVR, RF, Cubist,
    XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP or any

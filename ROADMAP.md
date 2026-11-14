@@ -14,7 +14,7 @@ keeps working unchanged.**
 
 ## Status
 
-Not started. Phase 0 (this document) is up for review.
+Phase 1 (fractional-order derivatives) is implemented; phases 2–7 to follow.
 
 ## Ground rules
 

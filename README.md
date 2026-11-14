@@ -80,7 +80,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 This library was developed to rapidly prototype and test various AI models across different spectral pre-treatments. It features:
 
-* Spectral pre-processing or pre-treatment (absorbance, SNV, MSC, Savitzky–Golay derivatives, continuum removal, detrending, ...), also as a scikit-learn transformer
+* Spectral pre-processing or pre-treatment (absorbance, SNV, MSC, Savitzky–Golay and fractional-order derivatives, continuum removal, detrending, ...), also as a scikit-learn transformer
 * Dataset splitting into training and independent test sets (random, Kennard–Stone, cLHS, cross-validation, stratified)
 * Model training and optimization of the algorithms' hyperparameters (PLS, SVR, RF, Cubist, XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP, or any scikit-learn regressor), with scikit-learn compatible models
 * Feature (wavelength) selection: RFE/RFECV, VIP filtering and pre-hoc rankings
@@ -193,6 +193,7 @@ More examples may be found under the [examples](examples) folder:
   * [quickstart.py](examples/quickstart.py): train and test a PLS model and plot its VIP over the mean spectrum
   * [compare_pretreatments.py](examples/compare_pretreatments.py): compare spectral pre-treatments with cross-validation
   * [select_wavelengths.py](examples/select_wavelengths.py): VIP, RFECV and correlation-based wavelength selection
+  * [fractional_derivatives.py](examples/fractional_derivatives.py): choose a fractional derivative order by cross-validation
 * Notebooks:
   * [modelExamples.ipynb](examples/modelExamples.ipynb): pre-treatments, models, splits, pipelines and feature selection
   * [modelInterpretability.ipynb](examples/modelInterpretability.ipynb): pre- and post-hoc explanations and plots
