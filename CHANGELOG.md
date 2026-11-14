@@ -18,6 +18,15 @@ All notable changes to this project are documented here. The decisions behind
   memory). Stateless, so it works in `Dataset.preprocess`, `fit_and_predict`,
   `SpectralPreprocessor` and scikit-learn pipelines. New example
   `fractional_derivatives.py` chooses the order by cross-validation.
+- **Importance strip plot**: `plot_importance_strip` on `PreHocAnalysis` and
+  `PostHocAnalysis` draws importance as a strip along the spectrum, darker where
+  a wavelength matters more. It takes an array, a fitted model, a selector or
+  boolean mask, a `FeatureRanking` (pre-hoc), or a dict of these for stacked,
+  labelled rows (one per method or output). Line mode (`top_k=`, `threshold=`,
+  or any selector or mask) draws only the chosen wavelengths as dark lines.
+  Options: `shared_scale`, `colorbar`, `with_spectrum` (mean spectrum above,
+  sharing the axis), `excluded_bands`, `cmap`. Follows the plot contract and the
+  wavenumber axis direction. New section in `modelInterpretability.ipynb`.
 
 ### Changed
 - `SpectralPreprocessingOptions` is typed `dict[str, Any]` (options may be floats).

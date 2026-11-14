@@ -14,7 +14,7 @@ keeps working unchanged.**
 
 ## Status
 
-Phase 1 (fractional-order derivatives) is implemented; phases 2–7 to follow.
+Phases 1 (fractional-order derivatives) and 2 (importance strip plot) are implemented; phases 3–7 to follow.
 
 ## Ground rules
 

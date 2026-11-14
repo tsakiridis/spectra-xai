@@ -106,6 +106,12 @@ _SINGLE_AXES_PLOTS: dict[str, PlotCall] = {
     "posthoc.bar_plot_permutation_importance": lambda d, m, ax: PostHocAnalysis(
         d, random_state=0
     ).bar_plot_permutation_importance(m.best_model, ax=ax),
+    "prehoc.plot_importance_strip": lambda d, m, ax: PreHocAnalysis(
+        d
+    ).plot_importance_strip(FeatureRanking.CORR, ax=ax, colorbar=True),
+    "posthoc.plot_importance_strip.lines": lambda d, m, ax: PostHocAnalysis(
+        d
+    ).plot_importance_strip(_importance(m), ax=ax, top_k=5),
     "utils.scatter_plot": lambda d, m, ax: scatter_plot(d.Y, m.predict(d.X), ax=ax),
 }
 

@@ -183,6 +183,15 @@ order from 0 to 2; optional <code>h</code> (band step, default 1) and <code>n_te
 memory). Stateless, so it works in <code>Dataset.preprocess</code>, <code>fit_and_predict</code>,
 <code>SpectralPreprocessor</code> and scikit-learn pipelines. New example
 <code>fractional_derivatives.py</code> chooses the order by cross-validation.</li>
+<li><strong>Importance strip plot</strong>: <code>plot_importance_strip</code> on <code>PreHocAnalysis</code> and
+<code>PostHocAnalysis</code> draws importance as a strip along the spectrum, darker where
+a wavelength matters more. It takes an array, a fitted model, a selector or
+boolean mask, a <code>FeatureRanking</code> (pre-hoc), or a dict of these for stacked,
+labelled rows (one per method or output). Line mode (<code>top_k=</code>, <code>threshold=</code>,
+or any selector or mask) draws only the chosen wavelengths as dark lines.
+Options: <code>shared_scale</code>, <code>colorbar</code>, <code>with_spectrum</code> (mean spectrum above,
+sharing the axis), <code>excluded_bands</code>, <code>cmap</code>. Follows the plot contract and the
+wavenumber axis direction. New section in <code>modelInterpretability.ipynb</code>.</li>
 </ul>
 
 <h3 id="changed">Changed</h3>
