@@ -14,7 +14,7 @@ keeps working unchanged.**
 
 ## Status
 
-Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random and Bayesian search) and 4 (joint pre-processing and model search) are implemented; phases 5–7 to follow.
+Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random and Bayesian search) 4 (joint pre-processing and model search) and 5 (local PLS and local GPR) are implemented; phases 6–7 to follow.
 
 ## Ground rules
 
@@ -73,12 +73,15 @@ Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random an
 **Tests:** finds the planted best pre-processing on a synthetic dataset; no leakage (stateful MSC fitted on training folds only); reproducible with `random_state`; the best pipeline predicts on new data; grid mode equals `fit_and_predict_multiple` for the same list.
 **Example:** `examples/automl_search.py` on the bundled SSL, and a section in `modelExamples.ipynb`.
 
-## Phase 5: Local PLS (memory-based learning)
+## Phase 5: Local PLS and local GPR (memory-based learning)
 
 - New `Model.LOCAL_PLS`, backed by a scikit-learn `LocalPLSRegressor(k=100, n_components=10, *, metric="pca-mahalanobis", n_pca_components=None, weights="uniform")`: for each spectrum to predict, a PLS model is fitted on its `k` nearest training spectra (the memory-based learning approach of the R package resemble).
 - Distances in PCA-score space (Mahalanobis) or by correlation; `n_components` capped at `k − 1`.
 - Usable through `StandardModel` (grid, random or Bayesian search over `k` and `n_components`) and in `PreprocessingSearch`.
 - Feature importance: the mean absolute VIP of the local models over the predicted samples.
+- Added during implementation: `Model.LOCAL_GPR`, backed by `LocalGPRRegressor(k=100, noise_variance=0.001, *, dissimilarity=None)`, a Gaussian process with a linear (dot-product) kernel per neighbourhood, as resemble's `local_fit_gpr`. Both share the neighbour search (module `spectraxai.local`).
+- Added after review: module `spectraxai.dissimilarity` with a `Dissimilarity` enum (Euclidean; Euclidean and Mahalanobis on PCA scores, Mahalanobis on PLS scores; correlation and moving-window correlation; SAM, SID, SID×tan(SAM), SID×sin(SAM)) and `SpectralDissimilarity` for options and stand-alone matrices. The local models take `dissimilarity=` (a member, a configured `SpectralDissimilarity`, or `Dissimilarity.PRECOMPUTED` with an external matrix passed to `predict` / `fit_and_predict`, which needs fixed hyperparameters since cross-validation cannot split it). This replaces the planned `metric=` / `n_pca_components=` strings.
+- Changed during implementation: no `weights` option (scikit-learn's PLS takes no sample weights, and resemble does not weight neighbours either); `feature_importance()` averages the VIP over the local models of the training spectra, and `LocalPLSRegressor.vip(X)` over those predicting `X`.
 
 **Tests:** with `k` equal to the training size it matches global PLS; outperforms global PLS on a synthetic dataset with locally different relationships; deterministic; sklearn estimator checks pass; works through `StandardModel` and with `fit_and_predict`.
 **Example:** a section in `modelExamples.ipynb` comparing local and global PLS.

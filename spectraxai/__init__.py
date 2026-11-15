@@ -22,6 +22,10 @@ A library to easily develop XAI models for spectral datasets.
  - `spectraxai.models`: `StandardModel`, training and tuning PLS, SVR, RF, Cubist,
    XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP or any
    scikit-learn regressor
+ - `spectraxai.local`: local (memory-based learning) PLS and Gaussian process
+   regression
+ - `spectraxai.dissimilarity`: dissimilarities of spectra (PCA/PLS Mahalanobis,
+   correlation, spectral angle, spectral information divergence, ...)
  - `spectraxai.selection`: wavelength selection (RFE/RFECV, VIP, pre-hoc rankings)
  - `spectraxai.search`: random and Bayesian (Optuna) hyperparameter search, and a
    joint search of pre-processing, model and hyperparameters

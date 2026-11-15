@@ -59,6 +59,28 @@ All notable changes to this project are documented here. The decisions behind
   `automl_search.py` and a section in `modelExamples.ipynb`.
 - `BayesianSearchCV.results_` (and so `StandardModel.search_results_` for
   Bayesian search) has a `rank_test_score` column, ranking complete trials only.
+- **Local models (memory-based learning)**: `Model.LOCAL_PLS` and
+  `Model.LOCAL_GPR`, backed by `spectraxai.local.LocalPLSRegressor(k=100,
+  n_components=10)` and `LocalGPRRegressor(k=100, noise_variance=0.001)`. Each
+  spectrum is predicted by a PLS model, or a linear-kernel Gaussian process as in
+  resemble's `local_fit_gpr`, fitted on its `k` nearest training spectra
+  (`dissimilarity=`, see below; Mahalanobis distance in principal-component
+  space by default). Default grids and search spaces over `k` and `n_components` /
+  `noise_variance`; local PLS reports the mean VIP of its local models as
+  feature importance (`LocalPLSRegressor.vip(X)` for given spectra). New section
+  in `modelExamples.ipynb`.
+- **Spectral dissimilarities**: new module `spectraxai.dissimilarity`. The
+  `Dissimilarity` enum names each measure: `EUCLIDEAN`; `PCA_EUCLIDEAN`,
+  `PCA_MAHALANOBIS` and `PLS_MAHALANOBIS` (on principal-component or PLS
+  scores); `CORRELATION` and `MOVING_CORRELATION`; the spectral angle `SAM`, the
+  spectral information divergence `SID`, and their combinations `SID_SAM_TAN`
+  and `SID_SAM_SIN`. `SpectralDissimilarity(method, n_components=None,
+  window=11)` sets the options and computes matrices against reference spectra
+  (`pairwise_dissimilarity` in one call). Local models take any of them as
+  `dissimilarity=` (also searchable), or `Dissimilarity.PRECOMPUTED` with a
+  matrix computed elsewhere, e.g. from other data than the spectra, passed to
+  `predict(X, dissimilarity=D)`, or as a matrix over all samples to
+  `fit_and_predict` / `fit_and_predict_multiple`.
 
 ### Changed
 - `SpectralPreprocessingOptions` is typed `dict[str, Any]` (options may be floats).

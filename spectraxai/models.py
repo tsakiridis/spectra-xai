@@ -36,6 +36,8 @@ from cubist import Cubist
 import xgboost as xgb
 
 from spectraxai.exceptions import SpectraXAIValueError
+from spectraxai.dissimilarity import Dissimilarity
+from spectraxai.local import LocalGPRRegressor, LocalPLSRegressor, pls_vip
 from spectraxai.search import BayesianSearchCV, random_distributions
 from spectraxai.utils import metrics, sigest
 from spectraxai.spectra import SpectralPreprocessing, SpectralPreprocessingSequence
@@ -58,6 +60,12 @@ class Model(str, Enum):
     GPR = "Gaussian Process Regression"
     """With a scaled RBF kernel plus white noise, tuned by marginal likelihood."""
     MLP = "Multi-layer Perceptron"
+    LOCAL_PLS = "Local Partial Least Squares"
+    """A PLS model per test spectrum, fitted on its nearest training spectra
+    (`spectraxai.local.LocalPLSRegressor`)."""
+    LOCAL_GPR = "Local Gaussian Process Regression"
+    """A linear-kernel Gaussian process per test spectrum, fitted on its nearest
+    training spectra (`spectraxai.local.LocalGPRRegressor`)."""
     CUSTOM = "Custom estimator"
     """Any scikit-learn compatible regressor, passed as ``estimator``."""
 
@@ -96,6 +104,8 @@ _DEFAULT_GRIDS: dict[Model, dict[str, Any]] = {
         "hidden_layer_sizes": [(50,), (100,), (50, 50)],
         "alpha": [1e-4, 1e-2, 1.0],
     },
+    Model.LOCAL_PLS: {"k": [50, 100, 200], "n_components": [5, 10, 15]},
+    Model.LOCAL_GPR: {"k": [50, 100, 200], "noise_variance": [1e-3, 1e-2, 0.1, 1.0]},
 }
 """Default grid searched per model (PLS n_components and SVR gamma depend on the
 dataset and are added at fit time; GPR tunes its kernel itself)."""
@@ -122,6 +132,8 @@ _DEFAULT_SPACES: dict[Model, dict[str, Any]] = {
         "hidden_layer_sizes": [(50,), (100,), (50, 50)],
         "alpha": ("log", 1e-4, 1.0),
     },
+    Model.LOCAL_PLS: {"k": ("logint", 20, 500), "n_components": ("int", 2, 20)},
+    Model.LOCAL_GPR: {"k": ("logint", 20, 500), "noise_variance": ("log", 1e-3, 1.0)},
 }
 """Default space of random and Bayesian search per model, covering the ranges of
 `_DEFAULT_GRIDS` (on a log scale where the grid is log-spaced). As for the grids,
@@ -412,6 +424,10 @@ class StandardModel(RegressorMixin, BaseEstimator):
             return GaussianProcessRegressor(kernel=kernel, normalize_y=True, **seeded)
         elif self.model == Model.MLP:
             return MLPRegressor(max_iter=2000, **seeded)
+        elif self.model == Model.LOCAL_PLS:
+            return LocalPLSRegressor()
+        elif self.model == Model.LOCAL_GPR:
+            return LocalGPRRegressor()
         elif self.model == Model.CUSTOM:
             return clone(self.estimator)
         raise SpectraXAIValueError(f"Unsupported model: {self.model!r}")
@@ -434,6 +450,8 @@ class StandardModel(RegressorMixin, BaseEstimator):
         Model.KNN: ["n_neighbors", "weights"],
         Model.GPR: [],
         Model.MLP: ["hidden_layer_sizes", "alpha"],
+        Model.LOCAL_PLS: ["k", "n_components"],
+        Model.LOCAL_GPR: ["k", "noise_variance"],
         Model.CUSTOM: [],
     }
     """Hyperparameters reported as columns by `fit_and_predict`, per model."""
@@ -444,28 +462,14 @@ class StandardModel(RegressorMixin, BaseEstimator):
             return self.best_hyperparameters[key]
         return self.best_model.get_params().get(key)
 
-    def __vip(self, model: PLSRegression) -> np.ndarray:
-        t = model.x_scores_
-        w = model.x_weights_
-        q = model.y_loadings_
-        p, h = w.shape
-        vips = np.zeros((p,))
-        s = np.diag(t.T @ t @ q.T @ q).reshape(h, -1)
-        total_s = np.sum(s)
-        for i in range(p):
-            weight = np.array(
-                [(w[i, j] / np.linalg.norm(w[:, j])) ** 2 for j in range(h)]
-            )
-            vips[i] = np.sqrt(p * (s.ravel() @ weight) / total_s)
-        return vips
-
     def feature_importance(self) -> tuple[np.ndarray | None, str | None]:
         """Return the fitted model's own feature importance and how it was computed.
 
         Returns
         -------
         `tuple`
-            ``(importance, method)``: VIP scores for PLS (``"VIP"``),
+            ``(importance, method)``: VIP scores for PLS (``"VIP"``; for local
+            PLS the mean VIP of the local models of the training spectra),
             ``feature_importances_`` for RF (``"impurity"``), Cubist (``"usage"``),
             XGBoost (its ``importance_type``, ``"gain"`` by default) and custom
             estimators (``"native"``), absolute coefficients for Ridge, Lasso,
@@ -479,7 +483,11 @@ class StandardModel(RegressorMixin, BaseEstimator):
             raise RuntimeError("You need to train the model first")
         model = self.best_model
         if self.model == Model.PLS:
-            return self.__vip(model), "VIP"
+            return pls_vip(model), "VIP"
+        if self.model == Model.LOCAL_PLS:
+            if model.dissimilarity is Dissimilarity.PRECOMPUTED:
+                return None, None  # needs the matrix: see LocalPLSRegressor.vip
+            return model.vip(), "VIP"
         if self.model == Model.SVR:
             return None, None
         if hasattr(model, "feature_importances_"):
@@ -600,6 +608,16 @@ class StandardModel(RegressorMixin, BaseEstimator):
                 if self.search == "grid"
                 else self._search_space(X_train)
             )
+            if any(
+                Dissimilarity.PRECOMPUTED is v
+                or (isinstance(v, (list, tuple)) and Dissimilarity.PRECOMPUTED in v)
+                for v in space.values()
+            ):
+                raise SpectraXAIValueError(
+                    "Hyperparameters cannot be searched with "
+                    "Dissimilarity.PRECOMPUTED (cross-validation cannot split an "
+                    "external matrix); pass init_hyperparameters"
+                )
             self.search_space_ = self.param_grid_ = space
             estimator = self._new_estimator(grid_search=True)
             trn_t0 = time.time()
@@ -687,13 +705,20 @@ class StandardModel(RegressorMixin, BaseEstimator):
         columns += ["mean_test_score", "std_test_score", "rank_test_score"]
         return cast(pandas.DataFrame, results[columns])
 
-    def predict(self, X_test: np.ndarray | Dataset | Any) -> np.ndarray:
+    def predict(
+        self, X_test: np.ndarray | Dataset | Any, dissimilarity: Any = None
+    ) -> np.ndarray:
         """Predict using the best_model from a new unknown input.
 
         Parameters
         ----------
         X_test: `np.ndarray` or `spectraxai.dataset.Dataset`
             The new input data to predict their output
+
+        dissimilarity: array-like of shape (n_test_samples, n_training_samples)
+            For local models with ``dissimilarity=Dissimilarity.PRECOMPUTED``
+            only: the dissimilarity of each test sample to each training sample
+            (see `spectraxai.local`).
 
         Returns
         -------
@@ -712,20 +737,22 @@ class StandardModel(RegressorMixin, BaseEstimator):
                 f"{self.n_features_in_}"
             )
         tst_t0 = time.time()
-        y_hat = self.pipeline_.predict(X)
+        params = {} if dissimilarity is None else {"dissimilarity": dissimilarity}
+        y_hat = self.pipeline_.predict(X, **params)
         tst_t1 = time.time()
         self.testing_time = tst_t1 - tst_t0
         return y_hat
 
     def _permutation_importance(
-        self, X: np.ndarray, Y: np.ndarray, output: int
+        self, X: np.ndarray, Y: np.ndarray, output: int, dissimilarity: Any = None
     ) -> np.ndarray:
         """Mean decrease in R2 of output ``output`` when permuting each feature."""
         if self.pipeline_ is None:
             raise RuntimeError("You need to train the model first")
 
         def score(estimator: Any, X_: np.ndarray, y_: np.ndarray) -> float:
-            y_hat = estimator.predict(X_)
+            params = {} if dissimilarity is None else {"dissimilarity": dissimilarity}
+            y_hat = estimator.predict(X_, **params)
             y_hat = y_hat[:, output] if y_hat.ndim == 2 else y_hat
             return float(r2_score(y_, y_hat))
 
@@ -752,6 +779,7 @@ class StandardModel(RegressorMixin, BaseEstimator):
         get_model: bool = False,
         *,
         return_permutation_importance: bool = False,
+        dissimilarity: Any = None,
     ) -> pandas.DataFrame:
         """Train and test a model in given dataset and spectral pre-processing sequence.
 
@@ -788,6 +816,14 @@ class StandardModel(RegressorMixin, BaseEstimator):
             ``feature_importance`` with the permutation importance on the test set
             (mean decrease in R2). Defaults to False.
 
+        dissimilarity: array-like of shape (n_samples, n_samples)
+            For local models with ``dissimilarity=Dissimilarity.PRECOMPUTED``
+            only: the dissimilarity between every pair of samples of ``dataset``,
+            e.g. computed from other data than the spectra. The rows of the test
+            samples and the columns of the training samples are used, and the
+            feature importance of local PLS is the mean VIP of the local models of
+            the test samples. Needs fixed hyperparameters (``init_hyperparameters``).
+
         Returns
         -------
         `pandas.DataFrame`
@@ -815,6 +851,7 @@ class StandardModel(RegressorMixin, BaseEstimator):
                     idx_trn=idx_trn[fold],
                     get_model=get_model,
                     return_permutation_importance=return_permutation_importance,
+                    dissimilarity=dissimilarity,
                 )
                 result["fold"] = fold + 1
                 results.append(result)
@@ -828,6 +865,7 @@ class StandardModel(RegressorMixin, BaseEstimator):
                     idx_tst=idx_tst[fold],
                     get_model=get_model,
                     return_permutation_importance=return_permutation_importance,
+                    dissimilarity=dissimilarity,
                 )
                 result["fold"] = fold + 1
                 results.append(result)
@@ -844,8 +882,21 @@ class StandardModel(RegressorMixin, BaseEstimator):
         self.fit(Dataset(X_trn, Y_trn))
         if self.best_model is None or self.best_hyperparameters is None:
             raise RuntimeError("The model failed to fit")
-        y_hat = self.predict(X_tst)
-        importance, importance_method = self.feature_importance()
+        D_tst = None
+        if dissimilarity is not None:
+            D = np.asarray(dissimilarity)
+            if D.shape != (dataset.n_samples, dataset.n_samples):
+                raise SpectraXAIValueError(
+                    "dissimilarity should be a square matrix over the samples of "
+                    f"the dataset, of shape {(dataset.n_samples,) * 2}, got {D.shape}"
+                )
+            D_tst = D[np.ix_(idx_tst, idx_trn)]
+        y_hat = self.predict(X_tst, dissimilarity=D_tst)
+        if D_tst is not None and self.model == Model.LOCAL_PLS:
+            importance = self.best_model.vip(X_tst, D_tst)
+            importance_method = "VIP"
+        else:
+            importance, importance_method = self.feature_importance()
 
         results = []
         for i in range(dataset.n_outputs):
@@ -862,7 +913,7 @@ class StandardModel(RegressorMixin, BaseEstimator):
                 res["SVs"] = len(self.best_model.support_)
             if importance is None and return_permutation_importance:
                 res["feature_importance"] = self._permutation_importance(
-                    X_tst, Y_tst, i
+                    X_tst, Y_tst, i, D_tst
                 )
                 res["importance_method"] = "permutation"
             else:
@@ -884,6 +935,7 @@ class StandardModel(RegressorMixin, BaseEstimator):
         idx_tst: np.ndarray | None = None,
         *,
         return_permutation_importance: bool = False,
+        dissimilarity: Any = None,
     ) -> pandas.DataFrame:
         """Train a model using different pre-treatments and predict on the test set.
 
@@ -907,6 +959,9 @@ class StandardModel(RegressorMixin, BaseEstimator):
         return_permutation_importance: `bool`
             See `fit_and_predict`. Defaults to False.
 
+        dissimilarity: array-like of shape (n_samples, n_samples)
+            See `fit_and_predict`. Defaults to None.
+
         Returns
         -------
         `pandas.DataFrame`
@@ -928,6 +983,7 @@ class StandardModel(RegressorMixin, BaseEstimator):
                 idx_trn,
                 idx_tst,
                 return_permutation_importance=return_permutation_importance,
+                dissimilarity=dissimilarity,
             )
             for preprocess in preprocesses
         ]
