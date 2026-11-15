@@ -14,7 +14,7 @@ keeps working unchanged.**
 
 ## Status
 
-Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random and Bayesian search) 4 (joint pre-processing and model search) and 5 (local PLS and local GPR) are implemented; phases 6–7 to follow.
+Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random and Bayesian search) 4 (joint pre-processing and model search), 5 (local PLS and local GPR) and 6 (applicability domain and prediction intervals) are implemented; phase 7 to follow.
 
 ## Ground rules
 
@@ -91,6 +91,7 @@ Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random an
 - New `spectraxai.diagnostics.ApplicabilityDomain(n_components=None, *, confidence=0.99)`: PCA on the training spectra, Hotelling T² and Q residual statistics with critical limits; `predict` flags spectra outside the domain, `score_samples` returns both statistics, and `plot` draws the T²–Q chart with the limits (plot contract).
 - New `spectraxai.uncertainty.ConformalRegressor(model, *, method="split", alpha=0.1, calibration_size=0.2, random_state=None)`: split-conformal and CV+ prediction intervals around any `StandardModel` or scikit-learn regressor; `predict(X, return_interval=True)`. No new dependency.
 - `fit_and_predict(..., *, return_intervals=False)` adds interval width and empirical coverage to the results.
+- Changed during implementation: choices are enums (`DomainStatistic`, `QLimit`, `ConformalMethod`) rather than strings. `score_samples` follows scikit-learn (one score per spectrum, higher is more typical) and the new `statistics` returns T² and Q. The Q limit defaults to Box's scaled chi-squared approximation: the Jackson–Mudholkar formula breaks down on the bundled MIR spectra (h₀ ≤ 0), flagging over 90% of ordinary spectra; it stays available as `QLimit.JACKSON_MUDHOLKAR`. `ConformalRegressor` gained `cv=` for CV+, and `fit_and_predict` gained `interval_alpha=`. The 99% limits are exceeded by about 5% of real spectra (heavier tails than normal), which the docs say.
 
 **Tests:** T² and Q limits match reference formulas; training spectra are mostly inside the domain at the chosen confidence; shifted or noisy spectra are flagged; conformal coverage on synthetic data within tolerance of 1 − alpha; reproducible; works with every model.
 **Example:** `examples/prediction_reliability.py` (flag unusual spectra and report predictions with intervals) and a section in `mirSpectra.ipynb`.

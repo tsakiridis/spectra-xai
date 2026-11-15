@@ -26,6 +26,8 @@ A library to easily develop XAI models for spectral datasets.
    regression
  - `spectraxai.dissimilarity`: dissimilarities of spectra (PCA/PLS Mahalanobis,
    correlation, spectral angle, spectral information divergence, ...)
+ - `spectraxai.diagnostics`: applicability domain of a model (Hotelling's T², Q)
+ - `spectraxai.uncertainty`: conformal prediction intervals
  - `spectraxai.selection`: wavelength selection (RFE/RFECV, VIP, pre-hoc rankings)
  - `spectraxai.search`: random and Bayesian (Optuna) hyperparameter search, and a
    joint search of pre-processing, model and hyperparameters

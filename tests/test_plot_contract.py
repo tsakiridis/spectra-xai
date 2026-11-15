@@ -16,6 +16,7 @@ from matplotlib.collections import PathCollection
 from matplotlib.colors import to_rgba
 
 from spectraxai.dataset import Dataset
+from spectraxai.diagnostics import ApplicabilityDomain
 from spectraxai.exceptions import SpectraXAIValueError
 from spectraxai.explain import FeatureRanking, PostHocAnalysis, PreHocAnalysis
 from spectraxai.models import Model, StandardModel
@@ -113,6 +114,9 @@ _SINGLE_AXES_PLOTS: dict[str, PlotCall] = {
         d
     ).plot_importance_strip(_importance(m), ax=ax, top_k=5),
     "utils.scatter_plot": lambda d, m, ax: scatter_plot(d.Y, m.predict(d.X), ax=ax),
+    "diagnostics.ApplicabilityDomain.plot": lambda d, m, ax: ApplicabilityDomain(3)
+    .fit(d)
+    .plot(d.X[:5], ax=ax),
 }
 
 

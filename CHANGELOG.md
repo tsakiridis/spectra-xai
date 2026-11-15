@@ -81,6 +81,24 @@ All notable changes to this project are documented here. The decisions behind
   matrix computed elsewhere, e.g. from other data than the spectra, passed to
   `predict(X, dissimilarity=D)`, or as a matrix over all samples to
   `fit_and_predict` / `fit_and_predict_multiple`.
+- **Applicability domain**: `spectraxai.diagnostics.ApplicabilityDomain(n_components=None,
+  confidence=0.99, statistic=None, q_limit_method=None)` describes the training
+  spectra by PCA and flags spectra with extreme scores (Hotelling's T²) or large
+  residuals (Q). Enums choose which statistics count (`DomainStatistic.T2`, `Q`,
+  `T2_OR_Q`) and how the Q limit is approximated (`QLimit.BOX`, the default, or
+  `QLimit.JACKSON_MUDHOLKAR`, which is undefined for the unequal eigenvalues of
+  many MIR spectra and then raises). Follows scikit-learn's outlier detectors
+  (`predict` gives 1 / -1, `decision_function`, `score_samples`); `statistics`
+  returns T² and Q, and `plot` draws the T²–Q chart with the limits.
+- **Prediction intervals**: `spectraxai.uncertainty.ConformalRegressor(model,
+  method=None, alpha=0.1, calibration_size=0.2, cv=5, random_state=None)` wraps
+  any `StandardModel` or scikit-learn regressor; `ConformalMethod.SPLIT` (the
+  default) or `ConformalMethod.CV_PLUS`. `predict(X, return_interval=True)`
+  returns predictions and bounds; `interval_coverage` checks them.
+  `fit_and_predict(..., return_intervals=True, interval_alpha=0.1)` adds
+  `interval_alpha`, `interval_width` and `interval_coverage` (CV+ with the tuned
+  hyperparameters). New example `prediction_reliability.py` and a section in
+  `mirSpectra.ipynb`.
 
 ### Changed
 - `SpectralPreprocessingOptions` is typed `dict[str, Any]` (options may be floats).

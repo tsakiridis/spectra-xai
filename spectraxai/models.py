@@ -39,6 +39,11 @@ from spectraxai.exceptions import SpectraXAIValueError
 from spectraxai.dissimilarity import Dissimilarity
 from spectraxai.local import LocalGPRRegressor, LocalPLSRegressor, pls_vip
 from spectraxai.search import BayesianSearchCV, random_distributions
+from spectraxai.uncertainty import (
+    ConformalMethod,
+    ConformalRegressor,
+    interval_coverage,
+)
 from spectraxai.utils import metrics, sigest
 from spectraxai.spectra import SpectralPreprocessing, SpectralPreprocessingSequence
 from spectraxai.dataset import Dataset
@@ -770,6 +775,24 @@ class StandardModel(RegressorMixin, BaseEstimator):
         )
         return np.asarray(result.importances_mean)
 
+    def _conformal_intervals(
+        self, X_trn: np.ndarray, Y_trn: np.ndarray, X_tst: np.ndarray, alpha: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """CV+ intervals for ``X_tst``, keeping the tuned hyperparameters fixed."""
+        fixed = cast(StandardModel, clone(self)).set_params(
+            init_hyperparameters=dict(self.best_hyperparameters or {})
+        )
+        cv = self.cv if isinstance(self.cv, int) else 5
+        conformal = ConformalRegressor(
+            fixed,
+            method=ConformalMethod.CV_PLUS,
+            alpha=alpha,
+            cv=cv,
+            random_state=self.random_state,
+        ).fit(X_trn, Y_trn.ravel() if Y_trn.shape[1] == 1 else Y_trn)
+        _, lower, upper = conformal.predict(X_tst, return_interval=True)
+        return lower.reshape(len(X_tst), -1), upper.reshape(len(X_tst), -1)
+
     def fit_and_predict(
         self,
         dataset: Dataset,
@@ -780,6 +803,8 @@ class StandardModel(RegressorMixin, BaseEstimator):
         *,
         return_permutation_importance: bool = False,
         dissimilarity: Any = None,
+        return_intervals: bool = False,
+        interval_alpha: float = 0.1,
     ) -> pandas.DataFrame:
         """Train and test a model in given dataset and spectral pre-processing sequence.
 
@@ -824,6 +849,18 @@ class StandardModel(RegressorMixin, BaseEstimator):
             feature importance of local PLS is the mean VIP of the local models of
             the test samples. Needs fixed hyperparameters (``init_hyperparameters``).
 
+        return_intervals: `bool`
+            Also compute conformal prediction intervals for the test samples
+            (CV+, see `spectraxai.uncertainty.ConformalRegressor`) with the tuned
+            hyperparameters, and add the columns ``interval_alpha``,
+            ``interval_width`` (mean width) and ``interval_coverage`` (fraction of
+            test values inside their interval). Costs one model fit per fold of
+            ``cv``. Defaults to False.
+
+        interval_alpha: `float`
+            Miscoverage rate of the intervals: 0.1 (the default) gives 90%
+            intervals.
+
         Returns
         -------
         `pandas.DataFrame`
@@ -852,6 +889,8 @@ class StandardModel(RegressorMixin, BaseEstimator):
                     get_model=get_model,
                     return_permutation_importance=return_permutation_importance,
                     dissimilarity=dissimilarity,
+                    return_intervals=return_intervals,
+                    interval_alpha=interval_alpha,
                 )
                 result["fold"] = fold + 1
                 results.append(result)
@@ -866,6 +905,8 @@ class StandardModel(RegressorMixin, BaseEstimator):
                     get_model=get_model,
                     return_permutation_importance=return_permutation_importance,
                     dissimilarity=dissimilarity,
+                    return_intervals=return_intervals,
+                    interval_alpha=interval_alpha,
                 )
                 result["fold"] = fold + 1
                 results.append(result)
@@ -882,6 +923,11 @@ class StandardModel(RegressorMixin, BaseEstimator):
         self.fit(Dataset(X_trn, Y_trn))
         if self.best_model is None or self.best_hyperparameters is None:
             raise RuntimeError("The model failed to fit")
+        if return_intervals and dissimilarity is not None:
+            raise SpectraXAIValueError(
+                "Prediction intervals are not available with a precomputed "
+                "dissimilarity matrix"
+            )
         D_tst = None
         if dissimilarity is not None:
             D = np.asarray(dissimilarity)
@@ -898,6 +944,11 @@ class StandardModel(RegressorMixin, BaseEstimator):
         else:
             importance, importance_method = self.feature_importance()
 
+        lower = upper = None
+        if return_intervals:
+            lower, upper = self._conformal_intervals(
+                X_trn, Y_trn, X_tst, interval_alpha
+            )
         results = []
         for i in range(dataset.n_outputs):
             res = metrics(Y_tst[:, i], y_hat[:, i] if y_hat.ndim == 2 else y_hat)
@@ -919,6 +970,12 @@ class StandardModel(RegressorMixin, BaseEstimator):
             else:
                 res["feature_importance"] = importance
                 res["importance_method"] = importance_method
+            if lower is not None and upper is not None:
+                res["interval_alpha"] = interval_alpha
+                res["interval_width"] = float(np.mean(upper[:, i] - lower[:, i]))
+                res["interval_coverage"] = float(
+                    interval_coverage(Y_tst[:, i], lower[:, i], upper[:, i])[0]
+                )
             res["random_state"] = self.random_state
             res["training_time"] = self.training_time
             res["testing_time"] = self.testing_time
@@ -936,6 +993,8 @@ class StandardModel(RegressorMixin, BaseEstimator):
         *,
         return_permutation_importance: bool = False,
         dissimilarity: Any = None,
+        return_intervals: bool = False,
+        interval_alpha: float = 0.1,
     ) -> pandas.DataFrame:
         """Train a model using different pre-treatments and predict on the test set.
 
@@ -962,6 +1021,9 @@ class StandardModel(RegressorMixin, BaseEstimator):
         dissimilarity: array-like of shape (n_samples, n_samples)
             See `fit_and_predict`. Defaults to None.
 
+        return_intervals, interval_alpha:
+            See `fit_and_predict`. Default to False and 0.1.
+
         Returns
         -------
         `pandas.DataFrame`
@@ -984,6 +1046,8 @@ class StandardModel(RegressorMixin, BaseEstimator):
                 idx_tst,
                 return_permutation_importance=return_permutation_importance,
                 dissimilarity=dissimilarity,
+                return_intervals=return_intervals,
+                interval_alpha=interval_alpha,
             )
             for preprocess in preprocesses
         ]

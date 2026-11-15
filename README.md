@@ -84,6 +84,7 @@ This library was developed to rapidly prototype and test various AI models acros
 * Dataset splitting into training and independent test sets (random, Kennard–Stone, cLHS, cross-validation, stratified)
 * Model training and optimization of the algorithms' hyperparameters by grid, random or Bayesian search (PLS, SVR, RF, Cubist, XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP, local PLS and local GPR, or any scikit-learn regressor), with scikit-learn compatible models
 * Joint (AutoML-style) search of the pre-processing, its options, the model and its hyperparameters
+* Reliability of predictions: applicability domain (Hotelling's T² and Q residuals) and conformal prediction intervals
 * Feature (wavelength) selection: RFE/RFECV, VIP filtering and pre-hoc rankings
 * Pre- and post-hoc explainability analysis: correlograms, feature rankings, VIP, permutation importance, SAGE, SHAP, plots of importance over the spectrum and importance strips (darker where a wavelength matters more); every plot accepts a matplotlib `ax` so it can be composed into your own figures
 
@@ -197,6 +198,7 @@ More examples may be found under the [examples](examples) folder:
   * [fractional_derivatives.py](examples/fractional_derivatives.py): choose a fractional derivative order by cross-validation
   * [hyperparameter_search.py](examples/hyperparameter_search.py): grid vs random vs Bayesian hyperparameter search
   * [automl_search.py](examples/automl_search.py): search pre-processing, model and hyperparameters together
+  * [prediction_reliability.py](examples/prediction_reliability.py): flag spectra outside the applicability domain and report predictions with conformal intervals
 * Notebooks:
   * [modelExamples.ipynb](examples/modelExamples.ipynb): pre-treatments, models, splits, pipelines and feature selection
   * [modelInterpretability.ipynb](examples/modelInterpretability.ipynb): pre- and post-hoc explanations and plots
