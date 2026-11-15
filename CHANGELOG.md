@@ -45,6 +45,20 @@ All notable changes to this project are documented here. The decisions behind
 - New example `hyperparameter_search.py`: grid vs random vs Bayesian search
   for SVR.
 - CI: tests run with the `optuna` extra, plus a job without it.
+- **Joint search of pre-processing and model**:
+  `spectraxai.search.PreprocessingSearch(models, preprocessings, search="bayes")`
+  searches the pre-processing, its options, the model and its hyperparameters
+  together. Pre-processing options written as ranges (e.g.
+  `(SP.FD, {"order": ("float", 0, 2)})` or an SG `window_length`) are tuned by
+  Bayesian search; `"grid"` and `"random"` search the listed pre-processings
+  with every model's grid or space. Every candidate is cross-validated as a
+  pipeline (`SpectralPreprocessor` → scaler → model), so stateful steps never
+  see the validation folds. Invalid option combinations fail single trials.
+  Results: `best_estimator_` (a fitted pipeline), `best_params_`,
+  `best_score_` and `results_` (one row per candidate). New example
+  `automl_search.py` and a section in `modelExamples.ipynb`.
+- `BayesianSearchCV.results_` (and so `StandardModel.search_results_` for
+  Bayesian search) has a `rank_test_score` column, ranking complete trials only.
 
 ### Changed
 - `SpectralPreprocessingOptions` is typed `dict[str, Any]` (options may be floats).

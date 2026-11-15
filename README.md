@@ -83,6 +83,7 @@ This library was developed to rapidly prototype and test various AI models acros
 * Spectral pre-processing or pre-treatment (absorbance, SNV, MSC, Savitzky–Golay and fractional-order derivatives, continuum removal, detrending, ...), also as a scikit-learn transformer
 * Dataset splitting into training and independent test sets (random, Kennard–Stone, cLHS, cross-validation, stratified)
 * Model training and optimization of the algorithms' hyperparameters by grid, random or Bayesian search (PLS, SVR, RF, Cubist, XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP, or any scikit-learn regressor), with scikit-learn compatible models
+* Joint (AutoML-style) search of the pre-processing, its options, the model and its hyperparameters
 * Feature (wavelength) selection: RFE/RFECV, VIP filtering and pre-hoc rankings
 * Pre- and post-hoc explainability analysis: correlograms, feature rankings, VIP, permutation importance, SAGE, SHAP, plots of importance over the spectrum and importance strips (darker where a wavelength matters more); every plot accepts a matplotlib `ax` so it can be composed into your own figures
 
@@ -195,6 +196,7 @@ More examples may be found under the [examples](examples) folder:
   * [select_wavelengths.py](examples/select_wavelengths.py): VIP, RFECV and correlation-based wavelength selection
   * [fractional_derivatives.py](examples/fractional_derivatives.py): choose a fractional derivative order by cross-validation
   * [hyperparameter_search.py](examples/hyperparameter_search.py): grid vs random vs Bayesian hyperparameter search
+  * [automl_search.py](examples/automl_search.py): search pre-processing, model and hyperparameters together
 * Notebooks:
   * [modelExamples.ipynb](examples/modelExamples.ipynb): pre-treatments, models, splits, pipelines and feature selection
   * [modelInterpretability.ipynb](examples/modelInterpretability.ipynb): pre- and post-hoc explanations and plots

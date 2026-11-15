@@ -23,7 +23,8 @@ A library to easily develop XAI models for spectral datasets.
    XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP or any
    scikit-learn regressor
  - `spectraxai.selection`: wavelength selection (RFE/RFECV, VIP, pre-hoc rankings)
- - `spectraxai.search`: random and Bayesian (Optuna) hyperparameter search
+ - `spectraxai.search`: random and Bayesian (Optuna) hyperparameter search, and a
+   joint search of pre-processing, model and hyperparameters
  - `spectraxai.explain`: pre- and post-hoc explanations and their plots
  - `spectraxai.plotting`: the conventions shared by all plots
  - `spectraxai.data`: the bundled example datasets (vis–NIR and MIR soil spectra)

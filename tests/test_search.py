@@ -189,6 +189,9 @@ def test_bayesian_search_is_reproducible(synthetic: Dataset) -> None:
     assert first.best_score == pytest.approx(
         results.loc[results.state == "complete", "mean_test_score"].max()
     )
+    best = results.loc[results["rank_test_score"] == 1, "mean_test_score"]
+    assert best.iloc[0] == pytest.approx(first.best_score)
+    assert results.loc[results.state != "complete", "rank_test_score"].isna().all()
 
 
 @needs_optuna
