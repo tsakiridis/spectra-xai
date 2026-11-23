@@ -56,6 +56,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
         <li><a href="#installation">Installation</a></li>
       </ul>
     </li>
+    <li><a href="#whats-new-in-130">What's new in 1.3.0</a></li>
     <li><a href="#whats-new-in-120">What's new in 1.2.0</a></li>
     <li><a href="#usage">Usage</a></li>
     <li>
@@ -141,6 +142,21 @@ sudo apt install build-essential
 
 
 <!-- WHAT'S NEW -->
+## What's new in 1.3.0
+
+Backwards compatible with 1.2.0: every addition is optional, with defaults that keep earlier results.
+
+* **Smarter search**: `StandardModel(..., search="random" | "bayes")` next to the default grid search; Bayesian search uses Optuna (`pip install spectraxai[optuna]`) and stops unpromising candidates early.
+* **Pre-processing and model searched together** (`spectraxai.search.PreprocessingSearch`): pre-processings, their options (e.g. a derivative order or window), models and hyperparameters in one search, each candidate cross-validated as a leak-free pipeline.
+* **Fractional-order derivatives**: `SpectralPreprocessing.FD` with any order from 0 to 2.
+* **Local models** (`spectraxai.local`): `Model.LOCAL_PLS` and `Model.LOCAL_GPR` fit a model per spectrum on its nearest training spectra, as resemble's memory-based learning.
+* **Spectral dissimilarities** (`spectraxai.dissimilarity`): Euclidean, Mahalanobis on PCA or PLS scores, correlation, spectral angle (SAM), spectral information divergence (SID) and their combinations, chosen with the `Dissimilarity` enum; or your own matrix computed from other data.
+* **Reliability of predictions**: `spectraxai.diagnostics.ApplicabilityDomain` flags spectra unlike the training spectra (Hotelling's T² and Q residuals), and `spectraxai.uncertainty.ConformalRegressor` gives prediction intervals with guaranteed coverage; `fit_and_predict(..., return_intervals=True)` reports them.
+* **Importance strips**: `plot_importance_strip` draws importance along the spectrum, darker where a wavelength matters more.
+* Choices are enums (`Dissimilarity`, `DomainStatistic`, `QLimit`, `ConformalMethod`) rather than strings.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
 ## What's new in 1.2.0
 
 Backwards compatible with 1.1.0, apart from the bug fixes listed in the changelog (which may change numeric results).

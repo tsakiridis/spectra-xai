@@ -7,9 +7,9 @@ SPDX-License-Identifier: GPL-3.0-or-later
 # Changelog
 
 All notable changes to this project are documented here. The decisions behind
-1.2.0 are in [ROADMAP.md](https://github.com/tsakiridis/spectra-xai/blob/main/ROADMAP.md).
+1.2.0 and 1.3.0 are in [ROADMAP.md](https://github.com/tsakiridis/spectra-xai/blob/main/ROADMAP.md).
 
-## [Unreleased] — 1.3.0
+## [1.3.0] — 2026-11-23
 
 ### Added
 - **Fractional-order derivatives**: `SpectralPreprocessing.FD` and `Spectra.fd`

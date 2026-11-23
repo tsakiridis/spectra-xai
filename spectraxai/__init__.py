@@ -78,5 +78,19 @@ ax, importance_ax = xai.plot_importance_spectrum(results.iloc[0]["feature_import
 Every plot accepts a matplotlib ``ax`` (or ``axes``), so it can be drawn into your
 own figures; see `spectraxai.plotting`.
 
+How far to trust the predictions: conformal prediction intervals, and whether the
+test spectra resemble the training spectra.
+```python
+results = pls.fit_and_predict(
+    dataset, SpectralPreprocessing.ABS, idx_trn=idx_trn, return_intervals=True
+)
+results[["RMSE", "interval_width", "interval_coverage"]]
+
+from spectraxai.diagnostics import ApplicabilityDomain
+
+domain = ApplicabilityDomain().fit(dataset.subset(idx_trn))
+domain.inside(dataset.subset(idx_tst)).mean()  # fraction inside the domain
+```
+
 .. include:: ../CHANGELOG.md
 '''

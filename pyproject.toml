@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "spectraxai"
-version = "1.3.0.dev0"
+version = "1.3.0"
 description = "eXplainable Artificial Intelligence for spectral datasets"
 readme = "README.md"
 license = "GPL-3.0-or-later"

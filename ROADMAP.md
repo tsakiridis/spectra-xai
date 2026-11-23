@@ -14,7 +14,7 @@ keeps working unchanged.**
 
 ## Status
 
-Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random and Bayesian search) 4 (joint pre-processing and model search), 5 (local PLS and local GPR) and 6 (applicability domain and prediction intervals) are implemented; phase 7 to follow.
+Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random and Bayesian search), 4 (joint pre-processing and model search), 5 (local PLS and local GPR), 6 (applicability domain and prediction intervals) and 7 (wrap-up) are implemented.
 
 ## Ground rules
 
