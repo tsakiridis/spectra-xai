@@ -101,9 +101,12 @@ _DEFAULT_GRIDS: dict[Model, dict[str, Any]] = {
         "colsample_bytree": [0.3, 0.6],
         "alpha": [0, 10],
     },
-    Model.RIDGE: {"alpha": np.logspace(-4, 3, 8)},
-    Model.LASSO: {"alpha": np.logspace(-5, 0, 6)},
-    Model.ELASTIC_NET: {"alpha": np.logspace(-5, 0, 6), "l1_ratio": [0.1, 0.5, 0.9]},
+    Model.RIDGE: {"alpha": [10.0**e for e in range(-4, 4)]},
+    Model.LASSO: {"alpha": [10.0**e for e in range(-5, 1)]},
+    Model.ELASTIC_NET: {
+        "alpha": [10.0**e for e in range(-5, 1)],
+        "l1_ratio": [0.1, 0.5, 0.9],
+    },
     Model.KNN: {"n_neighbors": [3, 5, 7, 9, 15], "weights": ["uniform", "distance"]},
     Model.MLP: {
         "hidden_layer_sizes": [(50,), (100,), (50, 50)],
