@@ -17,12 +17,20 @@ A library to easily develop XAI models for spectral datasets.
  - `spectraxai.dataset`: the `Dataset` (spectra, outputs, wavelengths), scaling and
    splitting (random, Kennard–Stone, cLHS, cross-validation, stratified)
  - `spectraxai.spectra`: spectral pre-processing (absorbance, SNV, MSC,
-   Savitzky–Golay, continuum removal, ...)
+   Savitzky–Golay and fractional-order derivatives, continuum removal, ...)
  - `spectraxai.preprocessing`: pre-processing as a scikit-learn transformer
  - `spectraxai.models`: `StandardModel`, training and tuning PLS, SVR, RF, Cubist,
    XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP or any
    scikit-learn regressor
+ - `spectraxai.local`: local (memory-based learning) PLS and Gaussian process
+   regression
+ - `spectraxai.dissimilarity`: dissimilarities of spectra (PCA/PLS Mahalanobis,
+   correlation, spectral angle, spectral information divergence, ...)
+ - `spectraxai.diagnostics`: applicability domain of a model (Hotelling's T², Q)
+ - `spectraxai.uncertainty`: conformal prediction intervals
  - `spectraxai.selection`: wavelength selection (RFE/RFECV, VIP, pre-hoc rankings)
+ - `spectraxai.search`: random and Bayesian (Optuna) hyperparameter search, and a
+   joint search of pre-processing, model and hyperparameters
  - `spectraxai.explain`: pre- and post-hoc explanations and their plots
  - `spectraxai.plotting`: the conventions shared by all plots
  - `spectraxai.data`: the bundled example datasets (vis–NIR and MIR soil spectra)
@@ -69,6 +77,20 @@ ax, importance_ax = xai.plot_importance_spectrum(results.iloc[0]["feature_import
 
 Every plot accepts a matplotlib ``ax`` (or ``axes``), so it can be drawn into your
 own figures; see `spectraxai.plotting`.
+
+How far to trust the predictions: conformal prediction intervals, and whether the
+test spectra resemble the training spectra.
+```python
+results = pls.fit_and_predict(
+    dataset, SpectralPreprocessing.ABS, idx_trn=idx_trn, return_intervals=True
+)
+results[["RMSE", "interval_width", "interval_coverage"]]
+
+from spectraxai.diagnostics import ApplicabilityDomain
+
+domain = ApplicabilityDomain().fit(dataset.subset(idx_trn))
+domain.inside(dataset.subset(idx_tst)).mean()  # fraction inside the domain
+```
 
 .. include:: ../CHANGELOG.md
 '''

@@ -28,7 +28,7 @@ from sklearn.neighbors import KNeighborsRegressor
 from sklearn.neural_network import MLPRegressor
 from sklearn.inspection import permutation_importance
 from sklearn.metrics import r2_score
-from sklearn.model_selection import GridSearchCV
+from sklearn.model_selection import GridSearchCV, RandomizedSearchCV
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import StandardScaler
 from sklearn.utils import Bunch
@@ -36,6 +36,14 @@ from cubist import Cubist
 import xgboost as xgb
 
 from spectraxai.exceptions import SpectraXAIValueError
+from spectraxai.dissimilarity import Dissimilarity
+from spectraxai.local import LocalGPRRegressor, LocalPLSRegressor, pls_vip
+from spectraxai.search import BayesianSearchCV, random_distributions
+from spectraxai.uncertainty import (
+    ConformalMethod,
+    ConformalRegressor,
+    interval_coverage,
+)
 from spectraxai.utils import metrics, sigest
 from spectraxai.spectra import SpectralPreprocessing, SpectralPreprocessingSequence
 from spectraxai.dataset import Dataset
@@ -57,6 +65,12 @@ class Model(str, Enum):
     GPR = "Gaussian Process Regression"
     """With a scaled RBF kernel plus white noise, tuned by marginal likelihood."""
     MLP = "Multi-layer Perceptron"
+    LOCAL_PLS = "Local Partial Least Squares"
+    """A PLS model per test spectrum, fitted on its nearest training spectra
+    (`spectraxai.local.LocalPLSRegressor`)."""
+    LOCAL_GPR = "Local Gaussian Process Regression"
+    """A linear-kernel Gaussian process per test spectrum, fitted on its nearest
+    training spectra (`spectraxai.local.LocalGPRRegressor`)."""
     CUSTOM = "Custom estimator"
     """Any scikit-learn compatible regressor, passed as ``estimator``."""
 
@@ -87,17 +101,53 @@ _DEFAULT_GRIDS: dict[Model, dict[str, Any]] = {
         "colsample_bytree": [0.3, 0.6],
         "alpha": [0, 10],
     },
-    Model.RIDGE: {"alpha": np.logspace(-4, 3, 8)},
-    Model.LASSO: {"alpha": np.logspace(-5, 0, 6)},
-    Model.ELASTIC_NET: {"alpha": np.logspace(-5, 0, 6), "l1_ratio": [0.1, 0.5, 0.9]},
+    Model.RIDGE: {"alpha": [10.0**e for e in range(-4, 4)]},
+    Model.LASSO: {"alpha": [10.0**e for e in range(-5, 1)]},
+    Model.ELASTIC_NET: {
+        "alpha": [10.0**e for e in range(-5, 1)],
+        "l1_ratio": [0.1, 0.5, 0.9],
+    },
     Model.KNN: {"n_neighbors": [3, 5, 7, 9, 15], "weights": ["uniform", "distance"]},
     Model.MLP: {
         "hidden_layer_sizes": [(50,), (100,), (50, 50)],
         "alpha": [1e-4, 1e-2, 1.0],
     },
+    Model.LOCAL_PLS: {"k": [50, 100, 200], "n_components": [5, 10, 15]},
+    Model.LOCAL_GPR: {"k": [50, 100, 200], "noise_variance": [1e-3, 1e-2, 0.1, 1.0]},
 }
 """Default grid searched per model (PLS n_components and SVR gamma depend on the
 dataset and are added at fit time; GPR tunes its kernel itself)."""
+
+_DEFAULT_SPACES: dict[Model, dict[str, Any]] = {
+    Model.SVR: {"C": ("log", 2.0**-2, 2.0**9), "epsilon": ("log", 0.01, 0.5)},
+    Model.RF: {
+        "max_features": [1.0, "sqrt", "log2"],
+        "n_estimators": ("int", 50, 200),
+    },
+    Model.CUBIST: {"n_committees": ("int", 1, 20), "neighbors": ("int", 1, 9)},
+    Model.XGBOOST: {
+        "max_depth": ("int", 2, 10),
+        "learning_rate": ("log", 0.01, 0.3),
+        "n_estimators": ("int", 10, 100),
+        "colsample_bytree": ("float", 0.3, 1.0),
+        "alpha": ("float", 0.0, 10.0),
+    },
+    Model.RIDGE: {"alpha": ("log", 1e-4, 1e3)},
+    Model.LASSO: {"alpha": ("log", 1e-5, 1.0)},
+    Model.ELASTIC_NET: {"alpha": ("log", 1e-5, 1.0), "l1_ratio": ("float", 0.1, 0.9)},
+    Model.KNN: {"n_neighbors": ("int", 3, 15), "weights": ["uniform", "distance"]},
+    Model.MLP: {
+        "hidden_layer_sizes": [(50,), (100,), (50, 50)],
+        "alpha": ("log", 1e-4, 1.0),
+    },
+    Model.LOCAL_PLS: {"k": ("logint", 20, 500), "n_components": ("int", 2, 20)},
+    Model.LOCAL_GPR: {"k": ("logint", 20, 500), "noise_variance": ("log", 1e-3, 1.0)},
+}
+"""Default space of random and Bayesian search per model, covering the ranges of
+`_DEFAULT_GRIDS` (on a log scale where the grid is log-spaced). As for the grids,
+PLS n_components and SVR gamma are added at fit time from the dataset."""
+
+_SEARCHES = ("grid", "random", "bayes")
 
 _SCALED_MODELS = frozenset(
     {
@@ -185,9 +235,32 @@ class StandardModel(RegressorMixin, BaseEstimator):
     """Seed passed to stochastic models (RF, XGBoost, Cubist) and to the SVR gamma
     estimation. None keeps the behaviour of earlier versions."""
 
+    search: str
+    """The hyperparameter search strategy: ``"grid"``, ``"random"`` or
+    ``"bayes"``."""
+
+    n_iter: int
+    """Number of candidates of random and Bayesian search."""
+
+    search_space: dict[str, Any] | None
+    """The space of random and Bayesian search (see `spectraxai.search`), or None
+    for the model's default space."""
+
+    sampler: Any
+    """The Optuna sampler of Bayesian search, or None for TPE."""
+
+    search_space_: dict[str, Any] | None
+    """The grid or space actually searched by the last call to `fit`, including
+    any dataset-dependent entries (SVR gamma, PLS n_components)."""
+
     param_grid_: dict[str, Any] | None
-    """The grid actually searched by the last call to `fit`, including any
-    dataset-dependent entries (SVR gamma, PLS n_components)."""
+    """Alias of `search_space_`, kept for compatibility."""
+
+    search_results_: pandas.DataFrame | None
+    """One row per candidate of the last search: its hyperparameters
+    (``param_<name>``), ``mean_test_score`` and ``std_test_score`` (and, for
+    Bayesian search, ``n_folds`` and ``state``, ``"pruned"`` for trials stopped
+    early). None when no search took place."""
 
     pipeline_: Pipeline | None
     """The fitted prediction pipeline: the SVR scaler (if any) followed by
@@ -203,6 +276,10 @@ class StandardModel(RegressorMixin, BaseEstimator):
         cv: int | Iterable[tuple[np.ndarray, np.ndarray]] = 5,
         random_state: int | None = None,
         n_jobs: int | None = -1,
+        search: str = "grid",
+        n_iter: int = 50,
+        search_space: dict[str, Any] | None = None,
+        sampler: Any = None,
     ) -> None:
         """Initialize StandardModel class for a `Model` and its hyperparameters.
 
@@ -237,6 +314,33 @@ class StandardModel(RegressorMixin, BaseEstimator):
             Number of parallel jobs of the grid search. Defaults to -1 (all
             processors).
 
+        search: `str`, optional
+            How hyperparameters are tuned when no ``init_hyperparameters`` are
+            given:
+
+            - ``"grid"`` (default): every combination of
+              ``grid_search_hyperparameters`` (`sklearn.model_selection.GridSearchCV`);
+            - ``"random"``: ``n_iter`` random candidates from ``search_space``
+              (`sklearn.model_selection.RandomizedSearchCV`);
+            - ``"bayes"``: ``n_iter`` Optuna trials over ``search_space``
+              (`spectraxai.search.BayesianSearchCV`; needs
+              ``pip install spectraxai[optuna]``).
+
+        n_iter: `int`, optional
+            Number of candidates of random and Bayesian search. Defaults to 50.
+
+        search_space: `dict`, optional
+            The space of random and Bayesian search: ranges such as
+            ``("log", 0.01, 100)`` or ``("int", 1, 20)``, lists of choices, or
+            Optuna/SciPy distributions (see `spectraxai.search`). Defaults to
+            the model's default space, or, if you passed
+            ``grid_search_hyperparameters``, to those (each list read as choices).
+
+        sampler: `optuna.samplers.BaseSampler`, optional
+            The Optuna sampler of Bayesian search (e.g.
+            ``optuna.samplers.GPSampler()``). Defaults to TPE seeded by
+            ``random_state``.
+
         """
         if (
             init_hyperparameters
@@ -269,13 +373,19 @@ class StandardModel(RegressorMixin, BaseEstimator):
         self.cv = cv
         self.random_state = random_state
         self.n_jobs = n_jobs
+        self.search = search
+        self.n_iter = n_iter
+        self.search_space = search_space
+        self.sampler = sampler
         self.training_time = None
         self.testing_time = None
         self.best_model = None
         self.best_hyperparameters = None
         self.best_score = None
         self.scaler = None
+        self.search_space_ = None
         self.param_grid_ = None
+        self.search_results_ = None
         self.pipeline_ = None
 
     def __sklearn_is_fitted__(self) -> bool:
@@ -322,6 +432,10 @@ class StandardModel(RegressorMixin, BaseEstimator):
             return GaussianProcessRegressor(kernel=kernel, normalize_y=True, **seeded)
         elif self.model == Model.MLP:
             return MLPRegressor(max_iter=2000, **seeded)
+        elif self.model == Model.LOCAL_PLS:
+            return LocalPLSRegressor()
+        elif self.model == Model.LOCAL_GPR:
+            return LocalGPRRegressor()
         elif self.model == Model.CUSTOM:
             return clone(self.estimator)
         raise SpectraXAIValueError(f"Unsupported model: {self.model!r}")
@@ -344,6 +458,8 @@ class StandardModel(RegressorMixin, BaseEstimator):
         Model.KNN: ["n_neighbors", "weights"],
         Model.GPR: [],
         Model.MLP: ["hidden_layer_sizes", "alpha"],
+        Model.LOCAL_PLS: ["k", "n_components"],
+        Model.LOCAL_GPR: ["k", "noise_variance"],
         Model.CUSTOM: [],
     }
     """Hyperparameters reported as columns by `fit_and_predict`, per model."""
@@ -354,28 +470,14 @@ class StandardModel(RegressorMixin, BaseEstimator):
             return self.best_hyperparameters[key]
         return self.best_model.get_params().get(key)
 
-    def __vip(self, model: PLSRegression) -> np.ndarray:
-        t = model.x_scores_
-        w = model.x_weights_
-        q = model.y_loadings_
-        p, h = w.shape
-        vips = np.zeros((p,))
-        s = np.diag(t.T @ t @ q.T @ q).reshape(h, -1)
-        total_s = np.sum(s)
-        for i in range(p):
-            weight = np.array(
-                [(w[i, j] / np.linalg.norm(w[:, j])) ** 2 for j in range(h)]
-            )
-            vips[i] = np.sqrt(p * (s.ravel() @ weight) / total_s)
-        return vips
-
     def feature_importance(self) -> tuple[np.ndarray | None, str | None]:
         """Return the fitted model's own feature importance and how it was computed.
 
         Returns
         -------
         `tuple`
-            ``(importance, method)``: VIP scores for PLS (``"VIP"``),
+            ``(importance, method)``: VIP scores for PLS (``"VIP"``; for local
+            PLS the mean VIP of the local models of the training spectra),
             ``feature_importances_`` for RF (``"impurity"``), Cubist (``"usage"``),
             XGBoost (its ``importance_type``, ``"gain"`` by default) and custom
             estimators (``"native"``), absolute coefficients for Ridge, Lasso,
@@ -389,7 +491,11 @@ class StandardModel(RegressorMixin, BaseEstimator):
             raise RuntimeError("You need to train the model first")
         model = self.best_model
         if self.model == Model.PLS:
-            return self.__vip(model), "VIP"
+            return pls_vip(model), "VIP"
+        if self.model == Model.LOCAL_PLS:
+            if model.dissimilarity is Dissimilarity.PRECOMPUTED:
+                return None, None  # needs the matrix: see LocalPLSRegressor.vip
+            return model.vip(), "VIP"
         if self.model == Model.SVR:
             return None, None
         if hasattr(model, "feature_importances_"):
@@ -424,10 +530,10 @@ class StandardModel(RegressorMixin, BaseEstimator):
     ) -> "StandardModel":
         """Trains the model on a given dataset (or on ``X, y``).
 
-        If you didn't supply the `init_hyperparameters` option to the constructor, then
-        a grid search optimization process takes place as follows:
-        Using the sklearn.model_selection.GridSearchCV approach, a grid search using a
-        cross-validation splitting strategy specified by cv is performed. After the
+        If you didn't supply the `init_hyperparameters` option to the constructor, the
+        hyperparameters are tuned first, using the cross-validation splitting
+        strategy specified by cv: a grid search (`sklearn.model_selection.GridSearchCV`)
+        by default, or a random or Bayesian search (see ``search``). After the
         optimal hyperparameters are defined, the model is then retrained on the whole
         dataset.
 
@@ -466,6 +572,15 @@ class StandardModel(RegressorMixin, BaseEstimator):
             cv, y = y, None
         dataset = self._as_dataset(dataset, y)
         cv = self.cv if cv is None else cv
+        if self.search not in _SEARCHES:
+            raise SpectraXAIValueError(
+                f"search should be one of {_SEARCHES}, got {self.search!r}"
+            )
+        if self.search == "grid" and self.search_space is not None:
+            raise SpectraXAIValueError(
+                'search_space is used by search="random" or "bayes"; for a grid '
+                "search pass grid_search_hyperparameters"
+            )
         if self.model in _SINGLE_OUTPUT_MODELS and dataset.n_outputs > 1:
             raise SpectraXAIValueError(
                 "Cannot create a multi-output model. "
@@ -482,46 +597,70 @@ class StandardModel(RegressorMixin, BaseEstimator):
             self.scaler = None
             X_train = dataset.X
 
-        # If hyperparameters are passed, use them; otherwise run grid search
+        y_train = np.squeeze(dataset.Y, axis=1) if dataset.n_outputs == 1 else dataset.Y
+        self.search_results_ = None
+        # If hyperparameters are passed, use them; otherwise search for them
         if len(self.init_hyperparameters) != 0:
             self.best_model = self._new_estimator(grid_search=False).set_params(
                 **self.init_hyperparameters
             )
-            self.param_grid_ = None
+            self.search_space_ = self.param_grid_ = None
             self.best_score = None
             trn_t0 = time.time()
-            self.best_model.fit(
-                X_train,
-                np.squeeze(dataset.Y, axis=1) if dataset.n_outputs == 1 else dataset.Y,
-            )
+            self.best_model.fit(X_train, y_train)
             self.best_hyperparameters = dict(self.init_hyperparameters)
             trn_t1 = time.time()
         else:
-            # Work on a copy so that dataset-dependent entries computed here do not
-            # leak into later calls (e.g. other folds or pre-processings).
-            param_grid = dict(self.grid_search_hyperparameters)
-            if self.model == Model.SVR and "gamma" not in param_grid:
-                gamma = sigest(X_train, random_state=self.random_state)
-                param_grid["gamma"] = np.linspace(gamma[0], gamma[2], num=5)
-            elif self.model == Model.PLS and "n_components" not in param_grid:
-                param_grid["n_components"] = np.arange(1, min(100, X_train.shape[1]), 1)
-            self.param_grid_ = param_grid
+            space = (
+                self._grid(X_train)
+                if self.search == "grid"
+                else self._search_space(X_train)
+            )
+            if any(
+                Dissimilarity.PRECOMPUTED is v
+                or (isinstance(v, (list, tuple)) and Dissimilarity.PRECOMPUTED in v)
+                for v in space.values()
+            ):
+                raise SpectraXAIValueError(
+                    "Hyperparameters cannot be searched with "
+                    "Dissimilarity.PRECOMPUTED (cross-validation cannot split an "
+                    "external matrix); pass init_hyperparameters"
+                )
+            self.search_space_ = self.param_grid_ = space
+            estimator = self._new_estimator(grid_search=True)
             trn_t0 = time.time()
-            grid_search = GridSearchCV(
-                estimator=self._new_estimator(grid_search=True),
-                param_grid=param_grid,
-                cv=cv,
-                n_jobs=self.n_jobs,
-                verbose=0,
-            )
-            grid_search.fit(
-                X_train,
-                np.squeeze(dataset.Y, axis=1) if dataset.n_outputs == 1 else dataset.Y,
-            )
+            if self.search == "bayes" and space:
+                search: Any = BayesianSearchCV(
+                    estimator,
+                    space,
+                    n_iter=self.n_iter,
+                    cv=cv,
+                    sampler=self.sampler,
+                    random_state=self.random_state,
+                )
+            elif self.search == "random" and space:
+                search = RandomizedSearchCV(
+                    estimator,
+                    random_distributions(space),
+                    n_iter=self.n_iter,
+                    cv=cv,
+                    n_jobs=self.n_jobs,
+                    random_state=self.random_state,
+                )
+            else:
+                search = GridSearchCV(
+                    estimator=estimator,
+                    param_grid=space,
+                    cv=cv,
+                    n_jobs=self.n_jobs,
+                    verbose=0,
+                )
+            search.fit(X_train, y_train)
             trn_t1 = time.time()
-            self.best_model = grid_search.best_estimator_
-            self.best_hyperparameters = grid_search.best_params_
-            self.best_score = grid_search.best_score_
+            self.best_model = search.best_estimator_
+            self.best_hyperparameters = search.best_params_
+            self.best_score = search.best_score_
+            self.search_results_ = self._results_table(search)
         self.training_time = trn_t1 - trn_t0
         steps: list[tuple[str, Any]] = [("model", self.best_model)]
         if self.scaler is not None:
@@ -529,13 +668,65 @@ class StandardModel(RegressorMixin, BaseEstimator):
         self.pipeline_ = Pipeline(steps)
         return self
 
-    def predict(self, X_test: np.ndarray | Dataset | Any) -> np.ndarray:
+    def _grid(self, X_train: np.ndarray) -> dict[str, Any]:
+        """The grid of a grid search, completed with dataset-dependent entries."""
+        # Work on a copy so that dataset-dependent entries computed here do not
+        # leak into later calls (e.g. other folds or pre-processings).
+        param_grid = dict(self.grid_search_hyperparameters)
+        if self.model == Model.SVR and "gamma" not in param_grid:
+            gamma = sigest(X_train, random_state=self.random_state)
+            param_grid["gamma"] = np.linspace(gamma[0], gamma[2], num=5)
+        elif self.model == Model.PLS and "n_components" not in param_grid:
+            param_grid["n_components"] = np.arange(1, min(100, X_train.shape[1]), 1)
+        return param_grid
+
+    def _search_space(self, X_train: np.ndarray) -> dict[str, Any]:
+        """The space of a random or Bayesian search, with dataset-dependent ranges.
+
+        Uses ``search_space`` if given, else custom
+        ``grid_search_hyperparameters`` (each list read as choices), else the
+        model's default space.
+
+        """
+        if self.search_space is not None:
+            space = dict(self.search_space)
+        elif self.grid_search_hyperparameters and not _is_default_grid(
+            self.model, self.grid_search_hyperparameters
+        ):
+            space = dict(self.grid_search_hyperparameters)
+        else:
+            space = dict(_DEFAULT_SPACES.get(self.model, {}))
+        if self.model == Model.SVR and "gamma" not in space:
+            gamma = sigest(X_train, random_state=self.random_state)
+            space["gamma"] = ("log", float(gamma[0]), float(gamma[2]))
+        elif self.model == Model.PLS and "n_components" not in space:
+            space["n_components"] = ("int", 1, max(1, min(100, X_train.shape[1]) - 1))
+        return space
+
+    @staticmethod
+    def _results_table(search: Any) -> pandas.DataFrame:
+        """One row per candidate of a fitted search."""
+        if isinstance(search, BayesianSearchCV):
+            return search.results_
+        results = pandas.DataFrame(search.cv_results_)
+        columns = [c for c in results.columns if c.startswith("param_")]
+        columns += ["mean_test_score", "std_test_score", "rank_test_score"]
+        return cast(pandas.DataFrame, results[columns])
+
+    def predict(
+        self, X_test: np.ndarray | Dataset | Any, dissimilarity: Any = None
+    ) -> np.ndarray:
         """Predict using the best_model from a new unknown input.
 
         Parameters
         ----------
         X_test: `np.ndarray` or `spectraxai.dataset.Dataset`
             The new input data to predict their output
+
+        dissimilarity: array-like of shape (n_test_samples, n_training_samples)
+            For local models with ``dissimilarity=Dissimilarity.PRECOMPUTED``
+            only: the dissimilarity of each test sample to each training sample
+            (see `spectraxai.local`).
 
         Returns
         -------
@@ -554,20 +745,22 @@ class StandardModel(RegressorMixin, BaseEstimator):
                 f"{self.n_features_in_}"
             )
         tst_t0 = time.time()
-        y_hat = self.pipeline_.predict(X)
+        params = {} if dissimilarity is None else {"dissimilarity": dissimilarity}
+        y_hat = self.pipeline_.predict(X, **params)
         tst_t1 = time.time()
         self.testing_time = tst_t1 - tst_t0
         return y_hat
 
     def _permutation_importance(
-        self, X: np.ndarray, Y: np.ndarray, output: int
+        self, X: np.ndarray, Y: np.ndarray, output: int, dissimilarity: Any = None
     ) -> np.ndarray:
         """Mean decrease in R2 of output ``output`` when permuting each feature."""
         if self.pipeline_ is None:
             raise RuntimeError("You need to train the model first")
 
         def score(estimator: Any, X_: np.ndarray, y_: np.ndarray) -> float:
-            y_hat = estimator.predict(X_)
+            params = {} if dissimilarity is None else {"dissimilarity": dissimilarity}
+            y_hat = estimator.predict(X_, **params)
             y_hat = y_hat[:, output] if y_hat.ndim == 2 else y_hat
             return float(r2_score(y_, y_hat))
 
@@ -585,6 +778,24 @@ class StandardModel(RegressorMixin, BaseEstimator):
         )
         return np.asarray(result.importances_mean)
 
+    def _conformal_intervals(
+        self, X_trn: np.ndarray, Y_trn: np.ndarray, X_tst: np.ndarray, alpha: float
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """CV+ intervals for ``X_tst``, keeping the tuned hyperparameters fixed."""
+        fixed = cast(StandardModel, clone(self)).set_params(
+            init_hyperparameters=dict(self.best_hyperparameters or {})
+        )
+        cv = self.cv if isinstance(self.cv, int) else 5
+        conformal = ConformalRegressor(
+            fixed,
+            method=ConformalMethod.CV_PLUS,
+            alpha=alpha,
+            cv=cv,
+            random_state=self.random_state,
+        ).fit(X_trn, Y_trn.ravel() if Y_trn.shape[1] == 1 else Y_trn)
+        _, lower, upper = conformal.predict(X_tst, return_interval=True)
+        return lower.reshape(len(X_tst), -1), upper.reshape(len(X_tst), -1)
+
     def fit_and_predict(
         self,
         dataset: Dataset,
@@ -594,6 +805,9 @@ class StandardModel(RegressorMixin, BaseEstimator):
         get_model: bool = False,
         *,
         return_permutation_importance: bool = False,
+        dissimilarity: Any = None,
+        return_intervals: bool = False,
+        interval_alpha: float = 0.1,
     ) -> pandas.DataFrame:
         """Train and test a model in given dataset and spectral pre-processing sequence.
 
@@ -630,6 +844,26 @@ class StandardModel(RegressorMixin, BaseEstimator):
             ``feature_importance`` with the permutation importance on the test set
             (mean decrease in R2). Defaults to False.
 
+        dissimilarity: array-like of shape (n_samples, n_samples)
+            For local models with ``dissimilarity=Dissimilarity.PRECOMPUTED``
+            only: the dissimilarity between every pair of samples of ``dataset``,
+            e.g. computed from other data than the spectra. The rows of the test
+            samples and the columns of the training samples are used, and the
+            feature importance of local PLS is the mean VIP of the local models of
+            the test samples. Needs fixed hyperparameters (``init_hyperparameters``).
+
+        return_intervals: `bool`
+            Also compute conformal prediction intervals for the test samples
+            (CV+, see `spectraxai.uncertainty.ConformalRegressor`) with the tuned
+            hyperparameters, and add the columns ``interval_alpha``,
+            ``interval_width`` (mean width) and ``interval_coverage`` (fraction of
+            test values inside their interval). Costs one model fit per fold of
+            ``cv``. Defaults to False.
+
+        interval_alpha: `float`
+            Miscoverage rate of the intervals: 0.1 (the default) gives 90%
+            intervals.
+
         Returns
         -------
         `pandas.DataFrame`
@@ -657,6 +891,9 @@ class StandardModel(RegressorMixin, BaseEstimator):
                     idx_trn=idx_trn[fold],
                     get_model=get_model,
                     return_permutation_importance=return_permutation_importance,
+                    dissimilarity=dissimilarity,
+                    return_intervals=return_intervals,
+                    interval_alpha=interval_alpha,
                 )
                 result["fold"] = fold + 1
                 results.append(result)
@@ -670,6 +907,9 @@ class StandardModel(RegressorMixin, BaseEstimator):
                     idx_tst=idx_tst[fold],
                     get_model=get_model,
                     return_permutation_importance=return_permutation_importance,
+                    dissimilarity=dissimilarity,
+                    return_intervals=return_intervals,
+                    interval_alpha=interval_alpha,
                 )
                 result["fold"] = fold + 1
                 results.append(result)
@@ -686,9 +926,32 @@ class StandardModel(RegressorMixin, BaseEstimator):
         self.fit(Dataset(X_trn, Y_trn))
         if self.best_model is None or self.best_hyperparameters is None:
             raise RuntimeError("The model failed to fit")
-        y_hat = self.predict(X_tst)
-        importance, importance_method = self.feature_importance()
+        if return_intervals and dissimilarity is not None:
+            raise SpectraXAIValueError(
+                "Prediction intervals are not available with a precomputed "
+                "dissimilarity matrix"
+            )
+        D_tst = None
+        if dissimilarity is not None:
+            D = np.asarray(dissimilarity)
+            if D.shape != (dataset.n_samples, dataset.n_samples):
+                raise SpectraXAIValueError(
+                    "dissimilarity should be a square matrix over the samples of "
+                    f"the dataset, of shape {(dataset.n_samples,) * 2}, got {D.shape}"
+                )
+            D_tst = D[np.ix_(idx_tst, idx_trn)]
+        y_hat = self.predict(X_tst, dissimilarity=D_tst)
+        if D_tst is not None and self.model == Model.LOCAL_PLS:
+            importance = self.best_model.vip(X_tst, D_tst)
+            importance_method = "VIP"
+        else:
+            importance, importance_method = self.feature_importance()
 
+        lower = upper = None
+        if return_intervals:
+            lower, upper = self._conformal_intervals(
+                X_trn, Y_trn, X_tst, interval_alpha
+            )
         results = []
         for i in range(dataset.n_outputs):
             res = metrics(Y_tst[:, i], y_hat[:, i] if y_hat.ndim == 2 else y_hat)
@@ -704,12 +967,18 @@ class StandardModel(RegressorMixin, BaseEstimator):
                 res["SVs"] = len(self.best_model.support_)
             if importance is None and return_permutation_importance:
                 res["feature_importance"] = self._permutation_importance(
-                    X_tst, Y_tst, i
+                    X_tst, Y_tst, i, D_tst
                 )
                 res["importance_method"] = "permutation"
             else:
                 res["feature_importance"] = importance
                 res["importance_method"] = importance_method
+            if lower is not None and upper is not None:
+                res["interval_alpha"] = interval_alpha
+                res["interval_width"] = float(np.mean(upper[:, i] - lower[:, i]))
+                res["interval_coverage"] = float(
+                    interval_coverage(Y_tst[:, i], lower[:, i], upper[:, i])[0]
+                )
             res["random_state"] = self.random_state
             res["training_time"] = self.training_time
             res["testing_time"] = self.testing_time
@@ -726,6 +995,9 @@ class StandardModel(RegressorMixin, BaseEstimator):
         idx_tst: np.ndarray | None = None,
         *,
         return_permutation_importance: bool = False,
+        dissimilarity: Any = None,
+        return_intervals: bool = False,
+        interval_alpha: float = 0.1,
     ) -> pandas.DataFrame:
         """Train a model using different pre-treatments and predict on the test set.
 
@@ -749,6 +1021,12 @@ class StandardModel(RegressorMixin, BaseEstimator):
         return_permutation_importance: `bool`
             See `fit_and_predict`. Defaults to False.
 
+        dissimilarity: array-like of shape (n_samples, n_samples)
+            See `fit_and_predict`. Defaults to None.
+
+        return_intervals, interval_alpha:
+            See `fit_and_predict`. Default to False and 0.1.
+
         Returns
         -------
         `pandas.DataFrame`
@@ -770,6 +1048,9 @@ class StandardModel(RegressorMixin, BaseEstimator):
                 idx_trn,
                 idx_tst,
                 return_permutation_importance=return_permutation_importance,
+                dissimilarity=dissimilarity,
+                return_intervals=return_intervals,
+                interval_alpha=interval_alpha,
             )
             for preprocess in preprocesses
         ]

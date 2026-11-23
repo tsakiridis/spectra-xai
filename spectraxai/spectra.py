@@ -10,11 +10,12 @@ operations on them like pre-processing.
 """
 
 import ast
+import numbers
 import re
 from typing import Any, TypeGuard, cast
 import numpy as np
 from enum import Enum
-from scipy.signal import detrend, savgol_filter
+from scipy.signal import detrend, lfilter, savgol_filter
 
 from spectraxai.exceptions import SpectraXAIValueError
 from spectraxai.utils import continuum_removal
@@ -46,6 +47,9 @@ class SpectralPreprocessing(str, Enum):
     """Remove a linear trend from each spectrum (`scipy.signal.detrend`)."""
     MEAN_CENTER = "mean-center"
     """Subtract the mean spectrum (column-wise centering)."""
+    FD = "fractional-derivative"
+    """Grünwald–Letnikov fractional-order derivative; requires an ``order`` option,
+    e.g. ``(SpectralPreprocessing.FD, {"order": 0.5})`` (see `Spectra.fd`)."""
 
     @property
     def is_stateful(self) -> bool:
@@ -125,7 +129,7 @@ class SpectralPreprocessing(str, Enum):
 
 
 SpectralPreprocessingOptions = (
-    SpectralPreprocessing | tuple[SpectralPreprocessing, dict[str, int]]
+    SpectralPreprocessing | tuple[SpectralPreprocessing, dict[str, Any]]
 )
 """Either a single SpectralPreprocessing or a tuple specifying a SpectralPreprocessing
 and its assorted options (e.g. window_length for SG).
@@ -151,6 +155,12 @@ Examples:
     SG1 + SNV
 
 """
+
+
+def _gl_weights(order: float, n_terms: int) -> np.ndarray:
+    """Grünwald–Letnikov coefficients ``(-1)^m binom(order, m)`` for m < n_terms."""
+    m = np.arange(1, n_terms)
+    return np.concatenate(([1.0], np.cumprod((m - 1 - order) / m)))
 
 
 def _steps(
@@ -282,6 +292,69 @@ class Spectra:
             raise SpectraXAIValueError("mean should have one value per column")
         return self._new(self.X - mu)
 
+    def fd(
+        self, order: float, *, h: float = 1.0, n_terms: int | None = None
+    ) -> "Spectra":
+        r"""Apply a Grünwald–Letnikov fractional-order derivative.
+
+        The derivative of order $v$ at band $j$ is the backward sum
+
+        $$D^v x_j \approx h^{-v} \sum_{m=0}^{M_j} w_m \, x_{j-m}, \qquad
+        w_0 = 1, \quad w_m = w_{m-1} \frac{m - 1 - v}{m},$$
+
+        over all preceding bands ($M_j = j$, full memory) or the last ``n_terms``
+        of them. Order 0 returns the spectra, order 1 the first backward difference
+        and order 2 the second; orders in between interpolate smoothly. As for the
+        Savitzky–Golay derivatives, the sign follows the stored column order (e.g.
+        MIR spectra stored from high to low wavenumber).
+
+        Fractional derivatives amplify noise like integer ones; smooth first if
+        needed, e.g. ``[(SG0, {...}), (FD, {"order": 1.5})]``.
+
+        Parameters
+        ----------
+        order: `float`
+            The derivative order $v$, between 0 and 2 (soil spectroscopy studies
+            typically try 0 to 2 in steps of 0.1 to 0.25).
+
+        h: `float`, optional
+            The step between bands. Defaults to 1, i.e. bands are counted (as in
+            the literature and as the SG derivatives here); pass the wavelength
+            interval for derivatives per wavelength unit.
+
+        n_terms: `int`, optional
+            Truncate the memory to this many coefficients. Defaults to None (all
+            preceding bands).
+
+        Returns
+        -------
+        `Spectra`
+            A new Spectra object with the derivative; the first bands use only the
+            bands available before them.
+
+        References
+        ----------
+        Hong, Y., et al. (2018). Exploring the potential of airborne hyperspectral
+        image for estimating topsoil organic carbon: effects of fractional-order
+        derivative and optimal band combination algorithm. Remote Sensing, 10(3),
+        479. https://doi.org/10.3390/rs10030479
+
+        """
+        if isinstance(order, bool) or not isinstance(order, numbers.Real):
+            raise SpectraXAIValueError("order should be a number between 0 and 2")
+        v = float(order)
+        if not 0 <= v <= 2:
+            raise SpectraXAIValueError(f"order should be between 0 and 2, got {v}")
+        if not h > 0:
+            raise SpectraXAIValueError(f"h should be positive, got {h}")
+        n_bands = self.X.shape[1]
+        terms = n_bands if n_terms is None else n_terms
+        if isinstance(terms, bool) or int(terms) != terms or terms < 1:
+            raise SpectraXAIValueError("n_terms should be a positive integer")
+        weights = _gl_weights(v, min(int(terms), n_bands))
+        X = cast(np.ndarray, lfilter(weights, [1.0], self.X, axis=-1))
+        return self._new(X / h**v)
+
     def _apply(
         self,
         method: SpectralPreprocessing,
@@ -309,6 +382,12 @@ class Spectra:
             return self.detrend(**options)
         elif method == SpectralPreprocessing.MEAN_CENTER:
             return self.mean_center(mean=state)
+        elif method == SpectralPreprocessing.FD:
+            if "order" not in options:
+                raise SpectraXAIValueError(
+                    "FD needs an order, e.g. (SpectralPreprocessing.FD, {'order': 0.5})"
+                )
+            return self.fd(**options)
         elif method == SpectralPreprocessing.NONE:
             return self
         raise SpectraXAIValueError(f"Unknown spectral pre-processing: {method!r}")

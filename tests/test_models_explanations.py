@@ -14,6 +14,7 @@ from matplotlib.colors import to_rgba
 from matplotlib.patches import Rectangle
 from sklearn.base import clone
 from sklearn.cross_decomposition import PLSRegression
+from threadpoolctl import threadpool_limits
 
 from spectraxai.dataset import Dataset
 from spectraxai.exceptions import SpectraXAIValueError
@@ -88,10 +89,16 @@ def test_linear_importance_is_the_standardized_coefficient(synthetic: Dataset) -
 def test_stochastic_new_models_are_reproducible(
     synthetic: Dataset, model: Model
 ) -> None:
-    preds = [
-        StandardModel(model, random_state=3, cv=3).fit(synthetic).predict(synthetic.X)
-        for _ in range(2)
-    ]
+    # One BLAS thread, in this process: GPR's optimiser can stop early on a failed
+    # line search, and where it stops depends on the summation order of
+    # multithreaded BLAS under load (worker processes would not inherit the limit)
+    with threadpool_limits(limits=1):
+        preds = [
+            StandardModel(model, random_state=3, cv=3, n_jobs=1)
+            .fit(synthetic)
+            .predict(synthetic.X)
+            for _ in range(2)
+        ]
     np.testing.assert_allclose(preds[0], preds[1], rtol=1e-6)
 
 

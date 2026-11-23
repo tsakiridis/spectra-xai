@@ -56,6 +56,7 @@ SPDX-License-Identifier: GPL-3.0-or-later
         <li><a href="#installation">Installation</a></li>
       </ul>
     </li>
+    <li><a href="#whats-new-in-130">What's new in 1.3.0</a></li>
     <li><a href="#whats-new-in-120">What's new in 1.2.0</a></li>
     <li><a href="#usage">Usage</a></li>
     <li>
@@ -80,11 +81,13 @@ SPDX-License-Identifier: GPL-3.0-or-later
 
 This library was developed to rapidly prototype and test various AI models across different spectral pre-treatments. It features:
 
-* Spectral pre-processing or pre-treatment (absorbance, SNV, MSC, Savitzky–Golay derivatives, continuum removal, detrending, ...), also as a scikit-learn transformer
+* Spectral pre-processing or pre-treatment (absorbance, SNV, MSC, Savitzky–Golay and fractional-order derivatives, continuum removal, detrending, ...), also as a scikit-learn transformer
 * Dataset splitting into training and independent test sets (random, Kennard–Stone, cLHS, cross-validation, stratified)
-* Model training and optimization of the algorithms' hyperparameters (PLS, SVR, RF, Cubist, XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP, or any scikit-learn regressor), with scikit-learn compatible models
+* Model training and optimization of the algorithms' hyperparameters by grid, random or Bayesian search (PLS, SVR, RF, Cubist, XGBoost, Ridge, Lasso, Elastic Net, kNN, Gaussian processes, MLP, local PLS and local GPR, or any scikit-learn regressor), with scikit-learn compatible models
+* Joint (AutoML-style) search of the pre-processing, its options, the model and its hyperparameters
+* Reliability of predictions: applicability domain (Hotelling's T² and Q residuals) and conformal prediction intervals
 * Feature (wavelength) selection: RFE/RFECV, VIP filtering and pre-hoc rankings
-* Pre- and post-hoc explainability analysis: correlograms, feature rankings, VIP, permutation importance, SAGE, SHAP, and plots of importance over the spectrum; every plot accepts a matplotlib `ax` so it can be composed into your own figures
+* Pre- and post-hoc explainability analysis: correlograms, feature rankings, VIP, permutation importance, SAGE, SHAP, plots of importance over the spectrum and importance strips (darker where a wavelength matters more); every plot accepts a matplotlib `ax` so it can be composed into your own figures
 
 <p align="right">(<a href="#readme-top">back to top</a>)</p>
 
@@ -124,9 +127,9 @@ sudo apt install build-essential
    cd spectra-xai && pip install .
    ```
 
-2. [Optional] For SHAP-based explanations install the `shap` extra:
+2. [Optional] For SHAP-based explanations install the `shap` extra, and for Bayesian hyperparameter search the `optuna` extra:
     ```
-    pip install .[shap]
+    pip install .[shap,optuna]
     ```
 
 3. [Optional] To install the development packages (e.g., if you want to edit this library) use:
@@ -139,6 +142,21 @@ sudo apt install build-essential
 
 
 <!-- WHAT'S NEW -->
+## What's new in 1.3.0
+
+Backwards compatible with 1.2.0: every addition is optional, with defaults that keep earlier results.
+
+* **Smarter search**: `StandardModel(..., search="random" | "bayes")` next to the default grid search; Bayesian search uses Optuna (`pip install spectraxai[optuna]`) and stops unpromising candidates early.
+* **Pre-processing and model searched together** (`spectraxai.search.PreprocessingSearch`): pre-processings, their options (e.g. a derivative order or window), models and hyperparameters in one search, each candidate cross-validated as a leak-free pipeline.
+* **Fractional-order derivatives**: `SpectralPreprocessing.FD` with any order from 0 to 2.
+* **Local models** (`spectraxai.local`): `Model.LOCAL_PLS` and `Model.LOCAL_GPR` fit a model per spectrum on its nearest training spectra, as resemble's memory-based learning.
+* **Spectral dissimilarities** (`spectraxai.dissimilarity`): Euclidean, Mahalanobis on PCA or PLS scores, correlation, spectral angle (SAM), spectral information divergence (SID) and their combinations, chosen with the `Dissimilarity` enum; or your own matrix computed from other data.
+* **Reliability of predictions**: `spectraxai.diagnostics.ApplicabilityDomain` flags spectra unlike the training spectra (Hotelling's T² and Q residuals), and `spectraxai.uncertainty.ConformalRegressor` gives prediction intervals with guaranteed coverage; `fit_and_predict(..., return_intervals=True)` reports them.
+* **Importance strips**: `plot_importance_strip` draws importance along the spectrum, darker where a wavelength matters more.
+* Choices are enums (`Dissimilarity`, `DomainStatistic`, `QLimit`, `ConformalMethod`) rather than strings.
+
+See [CHANGELOG.md](CHANGELOG.md) for the full list.
+
 ## What's new in 1.2.0
 
 Backwards compatible with 1.1.0, apart from the bug fixes listed in the changelog (which may change numeric results).
@@ -193,6 +211,10 @@ More examples may be found under the [examples](examples) folder:
   * [quickstart.py](examples/quickstart.py): train and test a PLS model and plot its VIP over the mean spectrum
   * [compare_pretreatments.py](examples/compare_pretreatments.py): compare spectral pre-treatments with cross-validation
   * [select_wavelengths.py](examples/select_wavelengths.py): VIP, RFECV and correlation-based wavelength selection
+  * [fractional_derivatives.py](examples/fractional_derivatives.py): choose a fractional derivative order by cross-validation
+  * [hyperparameter_search.py](examples/hyperparameter_search.py): grid vs random vs Bayesian hyperparameter search
+  * [automl_search.py](examples/automl_search.py): search pre-processing, model and hyperparameters together
+  * [prediction_reliability.py](examples/prediction_reliability.py): flag spectra outside the applicability domain and report predictions with conformal intervals
 * Notebooks:
   * [modelExamples.ipynb](examples/modelExamples.ipynb): pre-treatments, models, splits, pipelines and feature selection
   * [modelInterpretability.ipynb](examples/modelInterpretability.ipynb): pre- and post-hoc explanations and plots

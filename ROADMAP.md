@@ -4,7 +4,108 @@ SPDX-FileCopyrightText: 2026 Nikos Tsakiridis <tsakirin@auth.gr>
 SPDX-License-Identifier: GPL-3.0-or-later
 -->
 
-# SpectraXAI 1.2.0 roadmap
+# SpectraXAI 1.3.0 roadmap
+
+Goal: smarter model building and more trustworthy predictions: Bayesian and
+random hyperparameter search, joint search over pre-processing and model,
+fractional-order derivatives, local PLS, applicability-domain checks, conformal
+prediction intervals, and an importance "strip" plot. **Code that works on 1.2.0
+keeps working unchanged.**
+
+## Status
+
+Phases 1 (fractional-order derivatives), 2 (importance strip plot), 3 (random and Bayesian search), 4 (joint pre-processing and model search), 5 (local PLS and local GPR), 6 (applicability domain and prediction intervals) and 7 (wrap-up) are implemented.
+
+## Ground rules
+
+| # | Decision |
+|---|----------|
+| D1 | Release as **1.3.0** (new features; 1.2.x patches are for fixes only). The 1.2.0 ground rules still hold: keyword-only additions with defaults, `DeprecationWarning` for anything retired, `random_state` for every source of randomness, `SpectraXAIValueError` for invalid arguments, regression only. |
+| D2 | Optuna is an **optional extra** (`spectraxai[optuna]`). Grid and random search, and every other feature, need no new dependency. Using `search="bayes"` without Optuna raises an error saying how to install it. scikit-optimize is not used (archived, broken with current NumPy). |
+| D3 | Every phase ships with **tests and an example** (script or notebook section), runs in CI, and updates the CHANGELOG and docs. |
+| D4 | One branch and commit per phase, as for 1.2.0; docs regenerated at the end of each phase. |
+
+## Phase 1: Fractional-order derivatives
+
+- New `SpectralPreprocessing.FD`, used as `(SP.FD, {"order": 0.5})`; stateless, so it also works in `SpectralPreprocessor` and `fit_and_predict`.
+- Grünwald–Letnikov definition (the one used in soil spectroscopy, e.g. Hong et al. 2018), implemented in NumPy: coefficients by the recurrence w₀ = 1, wₘ = wₘ₋₁·(m − 1 − v)/m, applied as a backward convolution along the spectral axis.
+- Options: `order` (required, real, 0 ≤ order ≤ 2), `h=1` (step; the default counts bands, as in the literature and like the SG derivatives here), `n_terms=None` (full memory by default; an integer truncates it).
+- No built-in smoothing: chain it, e.g. `[SP.ABS, (SP.SG0, {...}), (SP.FD, {"order": 1.5})]`.
+- As with SG1, the sign follows the stored column order; documented for MIR data stored high to low.
+
+**Tests:** order 0 returns the spectrum; order 1 equals the first backward difference and order 2 the second; known closed forms (fractional derivative of a power function); `n_terms` truncation; `h` scaling (result scales by h^(−v)); `init_class` round-trip of `str((SP.FD, {...}))`; works in `fit_and_predict`, `SpectralPreprocessor` and a `Pipeline`; invalid orders raise.
+**Example:** `examples/fractional_derivatives.py`: PLS cross-validated RMSE for orders 0–2 in steps of 0.25, plotted against order, plus the spectra at a few orders.
+
+## Phase 2: Importance strip plot
+
+- New `plot_importance_strip` on `PreHocAnalysis` and `PostHocAnalysis`: a thin band along the spectral axis, darker where a wavelength is more important (like an absorption spectrum).
+- `importance`: an array, a fitted model (its own importance, as in `plot_importance_spectrum`), a fitted selector (its selected bands), or a dict `{label: importance}` for one stacked row per method or output.
+- Continuous mode (default) draws with `pcolormesh` over band edges, so dense spectra have no gaps or overlaps. Line mode (`top_k=` or `threshold=`, or automatically for a selector) draws only the chosen wavelengths as dark lines on a light strip, darkness still showing importance.
+- Darkness: |importance| min–max scaled per row (`shared_scale=True` for one scale across rows); `cmap="Greys"`, optional `colorbar=False`.
+- `with_spectrum=False`: when True on a figure the library creates, the mean spectrum is drawn above the strip(s), sharing the x axis. With a user `ax`, only the strip is drawn.
+- Follows the plot contract (`ax=`, `**kwargs`, no global state), the wavenumber axis direction and `excluded_bands`.
+
+**Tests:** artists drawn on the passed `ax`; one row per dict entry with labels; darkness ordering matches importance; line mode draws exactly `top_k` lines / the selector's bands; `shared_scale`; MIR axis reversed; excluded bands blank; `with_spectrum` creates two axes sharing x.
+**Example:** a section in `modelInterpretability.ipynb` comparing VIP, permutation, SHAP and correlation as stacked strips, and a selector in line mode.
+
+## Phase 3: Random and Bayesian hyperparameter search
+
+- `StandardModel(..., *, search="grid", n_iter=50, search_space=None, sampler=None)`:
+  - `"grid"`: unchanged behaviour (`GridSearchCV` over `grid_search_hyperparameters`);
+  - `"random"`: `RandomizedSearchCV`, no new dependency;
+  - `"bayes"`: Optuna (D2), TPE sampler by default, any Optuna sampler via `sampler=` (e.g. `GPSampler`).
+- Default search spaces per model, next to `_DEFAULT_GRIDS`, covering the same ranges (log scale where the grid is log-spaced): e.g. SVR `C` log-uniform 2⁻²–2⁹, `epsilon` 0.01–0.5, `gamma` from `sigest`'s range at fit time; PLS integer `n_components` 1 to min(100, features − 1); XGBoost `learning_rate` log 0.01–0.3, `max_depth` 2–10. GPR keeps tuning its own kernel.
+- Our own small search class (`spectraxai.search`) instead of the experimental `OptunaSearchCV`: each trial is scored by cross-validation; trials clearly behind are stopped after each fold (median pruning).
+- `search_space`: a dict of Optuna-style distributions or simple specs (`("log", 1e-3, 1e3)`, `("int", 1, 30)`, a list of choices). A list in `grid_search_hyperparameters` is treated as choices for random and Bayesian search.
+- Results filled the same way for every strategy: `best_hyperparameters`, `best_score`, `search_space_` (`param_grid_` kept as an alias), and a new `search_results_` table of all trials.
+
+**Tests:** grid results unchanged from 1.2.0; random and Bayesian search are reproducible with `random_state`; best score at least as good as a coarse grid on synthetic data; default spaces exist for every tunable model; pruning stops trials; clear error without Optuna (simulated); `clone` and `get_params` round-trip the new parameters; sklearn estimator checks still pass.
+**Example:** `examples/hyperparameter_search.py`: grid vs random vs Bayesian search for SVR on the bundled SSL, comparing RMSE, number of fits and time.
+**CI:** a test job with the `optuna` extra installed, and one without it.
+
+## Phase 4: Joint pre-processing and model search
+
+- New `spectraxai.search.PreprocessingSearch(models=[...], preprocessings=[...] or a space, *, search="bayes", n_iter=100, cv=5, random_state=None)`: one study that searches the pre-processing chain, its continuous parameters (FD order, SG window and polynomial order), the model, and its hyperparameters.
+- Pre-processing in every trial is learned on the training folds only, as `fit_and_predict` does.
+- Returns a fitted best pipeline (`best_estimator_`, a scikit-learn `Pipeline` of `SpectralPreprocessor` and model) and a `results_` table of every trial; `search="grid"` enumerates the given list, which replaces hand-written loops over `fit_and_predict_multiple`.
+- Works on a `Dataset` or on X, y.
+
+**Tests:** finds the planted best pre-processing on a synthetic dataset; no leakage (stateful MSC fitted on training folds only); reproducible with `random_state`; the best pipeline predicts on new data; grid mode equals `fit_and_predict_multiple` for the same list.
+**Example:** `examples/automl_search.py` on the bundled SSL, and a section in `modelExamples.ipynb`.
+
+## Phase 5: Local PLS and local GPR (memory-based learning)
+
+- New `Model.LOCAL_PLS`, backed by a scikit-learn `LocalPLSRegressor(k=100, n_components=10, *, metric="pca-mahalanobis", n_pca_components=None, weights="uniform")`: for each spectrum to predict, a PLS model is fitted on its `k` nearest training spectra (the memory-based learning approach of the R package resemble).
+- Distances in PCA-score space (Mahalanobis) or by correlation; `n_components` capped at `k − 1`.
+- Usable through `StandardModel` (grid, random or Bayesian search over `k` and `n_components`) and in `PreprocessingSearch`.
+- Feature importance: the mean absolute VIP of the local models over the predicted samples.
+- Added during implementation: `Model.LOCAL_GPR`, backed by `LocalGPRRegressor(k=100, noise_variance=0.001, *, dissimilarity=None)`, a Gaussian process with a linear (dot-product) kernel per neighbourhood, as resemble's `local_fit_gpr`. Both share the neighbour search (module `spectraxai.local`).
+- Added after review: module `spectraxai.dissimilarity` with a `Dissimilarity` enum (Euclidean; Euclidean and Mahalanobis on PCA scores, Mahalanobis on PLS scores; correlation and moving-window correlation; SAM, SID, SID×tan(SAM), SID×sin(SAM)) and `SpectralDissimilarity` for options and stand-alone matrices. The local models take `dissimilarity=` (a member, a configured `SpectralDissimilarity`, or `Dissimilarity.PRECOMPUTED` with an external matrix passed to `predict` / `fit_and_predict`, which needs fixed hyperparameters since cross-validation cannot split it). This replaces the planned `metric=` / `n_pca_components=` strings.
+- Changed during implementation: no `weights` option (scikit-learn's PLS takes no sample weights, and resemble does not weight neighbours either); `feature_importance()` averages the VIP over the local models of the training spectra, and `LocalPLSRegressor.vip(X)` over those predicting `X`.
+
+**Tests:** with `k` equal to the training size it matches global PLS; outperforms global PLS on a synthetic dataset with locally different relationships; deterministic; sklearn estimator checks pass; works through `StandardModel` and with `fit_and_predict`.
+**Example:** a section in `modelExamples.ipynb` comparing local and global PLS.
+
+## Phase 6: Applicability domain and prediction intervals
+
+- New `spectraxai.diagnostics.ApplicabilityDomain(n_components=None, *, confidence=0.99)`: PCA on the training spectra, Hotelling T² and Q residual statistics with critical limits; `predict` flags spectra outside the domain, `score_samples` returns both statistics, and `plot` draws the T²–Q chart with the limits (plot contract).
+- New `spectraxai.uncertainty.ConformalRegressor(model, *, method="split", alpha=0.1, calibration_size=0.2, random_state=None)`: split-conformal and CV+ prediction intervals around any `StandardModel` or scikit-learn regressor; `predict(X, return_interval=True)`. No new dependency.
+- `fit_and_predict(..., *, return_intervals=False)` adds interval width and empirical coverage to the results.
+- Changed during implementation: choices are enums (`DomainStatistic`, `QLimit`, `ConformalMethod`) rather than strings. `score_samples` follows scikit-learn (one score per spectrum, higher is more typical) and the new `statistics` returns T² and Q. The Q limit defaults to Box's scaled chi-squared approximation: the Jackson–Mudholkar formula breaks down on the bundled MIR spectra (h₀ ≤ 0), flagging over 90% of ordinary spectra; it stays available as `QLimit.JACKSON_MUDHOLKAR`. `ConformalRegressor` gained `cv=` for CV+, and `fit_and_predict` gained `interval_alpha=`. The 99% limits are exceeded by about 5% of real spectra (heavier tails than normal), which the docs say.
+
+**Tests:** T² and Q limits match reference formulas; training spectra are mostly inside the domain at the chosen confidence; shifted or noisy spectra are flagged; conformal coverage on synthetic data within tolerance of 1 − alpha; reproducible; works with every model.
+**Example:** `examples/prediction_reliability.py` (flag unusual spectra and report predictions with intervals) and a section in `mirSpectra.ipynb`.
+
+## Phase 7: Wrap-up
+
+- Notebooks re-run with the new features; README "What's new in 1.3.0"; CHANGELOG; docs rebuilt.
+- CI: the examples job installs the `optuna` extra.
+
+## Out of scope for 1.3.0
+
+Calibration transfer (DS/PDS), spectral augmentation, more representative-sampling methods (Duplex, Puchwein) and 1D-CNN models were considered and rejected.
+
+# SpectraXAI 1.2.0 roadmap (released)
 
 Goal: make `spectraxai` more solid — consistent, sklearn-compatible interfaces,
 robust and composable plots, real test coverage, feature selection, more models —

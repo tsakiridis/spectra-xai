@@ -17,10 +17,18 @@ from typing import Any, cast
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.axes import Axes
+from matplotlib.cm import ScalarMappable
+from matplotlib.collections import LineCollection, QuadMesh
+from matplotlib.colors import Normalize
 from matplotlib.cbook import normalize_kwargs
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
-from matplotlib.ticker import AutoMinorLocator, LinearLocator, MaxNLocator
+from matplotlib.ticker import (
+    AutoMinorLocator,
+    LinearLocator,
+    MaxNLocator,
+    NullLocator,
+)
 from sklearn.utils import Bunch
 from sklearn.inspection import permutation_importance
 from sklearn.feature_selection import mutual_info_regression, f_regression
@@ -31,7 +39,12 @@ from sage.core import Explanation
 
 from spectraxai.dataset import Dataset
 from spectraxai.exceptions import SpectraXAIValueError
-from spectraxai.plotting import DPI, FIGSIZE, _as_axes_array, _styled_unless
+from spectraxai.plotting import (
+    DPI,
+    FIGSIZE,
+    _as_axes_array,
+    _styled_unless,
+)
 from spectraxai.spectra import SpectralPreprocessing
 
 
@@ -271,6 +284,320 @@ class _Explain:
                 )
         return self._stylize_plot(ax)
 
+    def _importance_array(self, importance: Any) -> np.ndarray:
+        """Accept an importance array or a fitted `StandardModel`."""
+        if hasattr(importance, "feature_importance") and not isinstance(
+            importance, _Explain
+        ):
+            values, _ = importance.feature_importance()
+            if values is None:
+                raise SpectraXAIValueError(
+                    "The model has no feature importance of its own; pass an array "
+                    "(e.g. from fit_and_predict(..., return_permutation_importance="
+                    "True))"
+                )
+            importance = values
+        importance = np.asarray(importance, dtype=float).ravel()
+        self._check_bar_array(importance)
+        return importance
+
+    def _support_mask(self, support: Any) -> np.ndarray:
+        """A boolean mask from a mask, integer indices or a fitted selector."""
+        if hasattr(support, "get_support"):
+            support = support.get_support()
+        support = np.asarray(support)
+        if support.dtype == bool:
+            if support.shape != (self.dataset.n_features,):
+                raise SpectraXAIValueError(
+                    "support should have one value per input feature"
+                )
+            return support
+        mask = np.zeros(self.dataset.n_features, dtype=bool)
+        mask[support.astype(int)] = True
+        return mask
+
+    def _strip_rows(self, importance: Any, label: str | None) -> list[tuple]:
+        """Resolve one importance source into ``(label, values, is_mask)`` rows."""
+        n_features = self.dataset.n_features
+        if hasattr(importance, "get_support"):
+            return [(label, self._support_mask(importance).astype(float), True)]
+        if isinstance(importance, FeatureRanking):
+            if not isinstance(self, PreHocAnalysis):
+                raise SpectraXAIValueError(
+                    "Feature rankings are available on PreHocAnalysis"
+                )
+            values = self.feature_importance(importance)
+            label = importance.name if label is None else label
+        elif hasattr(importance, "feature_importance"):
+            values = self._importance_array(importance)
+        else:
+            values = np.asarray(importance)
+        if values.dtype == bool:
+            return [(label, self._support_mask(values).astype(float), True)]
+        values = np.asarray(values, dtype=float)
+        if values.ndim == 2 and values.shape[1] != n_features:
+            values = values.T  # (n_features, n_rows) -> (n_rows, n_features)
+        values = np.atleast_2d(values)
+        if values.ndim != 2 or values.shape[1] != n_features or not values.size:
+            raise SpectraXAIValueError(
+                "importance should have one value per input feature"
+            )
+        if values.shape[0] == 1:
+            return [(label, values[0], False)]
+        names = (
+            list(self.dataset.Y_names)
+            if values.shape[0] == self.dataset.n_outputs
+            else [str(i + 1) for i in range(values.shape[0])]
+        )
+        return [
+            (str(name) if label is None else f"{label}: {name}", row, False)
+            for name, row in zip(names, values)
+        ]
+
+    @_styled_unless("ax")
+    def plot_importance_strip(
+        self,
+        importance: Any,
+        ax: Axes | None = None,
+        *,
+        top_k: int | None = None,
+        threshold: float | None = None,
+        shared_scale: bool = False,
+        colorbar: bool = False,
+        with_spectrum: bool = False,
+        excluded_bands: Sequence[tuple[float, float]] | None = None,
+        cmap: Any = "Greys",
+        **kwargs: Any,
+    ) -> Axes:
+        """Draw feature importance as a strip, darker where a band matters more.
+
+        Like an absorption spectrum, each wavelength is shaded by its importance.
+        Several importances (methods, outputs) can be stacked as rows to compare
+        them at a glance.
+
+        In the default *continuous* mode every band is shaded. In *line* mode
+        (``top_k`` or ``threshold``, or a selector or boolean mask) only the chosen
+        wavelengths are drawn, as dark lines on a light strip.
+
+        Parameters
+        ----------
+        importance: array, model, selector, `FeatureRanking` or `dict`
+            What to draw:
+
+            - an array with one value per feature, or a 2-D array with one row
+              per output (e.g. from `PreHocAnalysis.feature_importance`);
+            - a fitted `spectraxai.models.StandardModel` (its own importance);
+            - a fitted selector from `spectraxai.selection` or a boolean mask
+              (its selected bands, drawn as lines);
+            - a `FeatureRanking` (on `PreHocAnalysis` only);
+            - a ``dict`` mapping row labels to any of the above, drawn top to
+              bottom.
+
+        ax: `plt.Axes`, optional
+            The axes to draw the strip(s) into. Defaults to None, in which case a
+            new figure is created.
+
+        top_k: `int`, optional
+            Draw only the ``top_k`` most important wavelengths of each row, as
+            lines.
+
+        threshold: `float`, optional
+            Draw only wavelengths whose absolute importance is at least
+            ``threshold`` (e.g. 1 for VIP), as lines.
+
+        shared_scale: `bool`, optional
+            Scale all rows together instead of each row on its own. Defaults to
+            False: the most important band of every row is darkest.
+
+        colorbar: `bool`, optional
+            Add a colorbar for the relative importance. Defaults to False.
+
+        with_spectrum: `bool`, optional
+            On a new figure, draw the mean spectrum ± SD above the strip(s),
+            sharing the wavelength axis (it is then ``ax.figure.axes[0]``).
+            Cannot be combined with ``ax``.
+
+        excluded_bands: sequence of tuple[float, float], optional
+            Wavelength intervals to leave blank (see `mean_spectrum`).
+
+        cmap: `str` or `matplotlib.colors.Colormap`, optional
+            The colormap from unimportant to important. Defaults to ``"Greys"``.
+
+        **kwargs
+            Passed on to `matplotlib.axes.Axes.pcolormesh` (continuous mode) or
+            `matplotlib.axes.Axes.vlines` (line mode, e.g. ``linewidth``).
+
+        Returns
+        -------
+        `plt.Axes`
+            The axes with the strip(s).
+
+        Notes
+        -----
+        The darkness is the absolute importance min–max scaled per row (or over
+        all rows with ``shared_scale``). In line mode it is the absolute
+        importance divided by the row maximum, starting from a light grey so that
+        every drawn line stays visible; masks and selectors are drawn black.
+
+        """
+        if with_spectrum and ax is not None:
+            raise SpectraXAIValueError(
+                "with_spectrum draws its own figure; pass either ax or "
+                "with_spectrum=True"
+            )
+        if top_k is not None and (
+            isinstance(top_k, bool) or int(top_k) != top_k or top_k < 1
+        ):
+            raise SpectraXAIValueError("top_k should be a positive integer")
+        sources = (
+            list(importance.items())
+            if isinstance(importance, dict)
+            else [(None, importance)]
+        )
+        if not sources:
+            raise SpectraXAIValueError("importance cannot be an empty dict")
+        rows = [
+            row
+            for label, source in sources
+            for row in self._strip_rows(source, None if label is None else str(label))
+        ]
+        n_rows = len(rows)
+
+        wavelengths = self._wavelengths()
+        order = np.argsort(wavelengths)
+        wvs = wavelengths[order]
+        edges = _band_edges(wvs)
+        bands = np.sort(
+            np.asarray(
+                excluded_bands if excluded_bands is not None else [], dtype=float
+            ).reshape(-1, 2),
+            axis=1,
+        )
+        excluded = np.zeros(wvs.shape, dtype=bool)
+        for start, end in bands:
+            excluded |= (wvs >= start) & (wvs <= end)
+
+        values = np.abs(np.vstack([row[1] for row in rows]))[:, order]
+        values[:, excluded] = np.nan
+        is_mask = np.array([row[2] for row in rows])
+        line_mode = top_k is not None or threshold is not None or bool(is_mask.any())
+
+        owned_axes: list[Axes] = []
+        if ax is None:
+            height = 0.45 * n_rows + 1.2
+            if with_spectrum:
+                fig, (spectrum_ax, ax) = plt.subplots(
+                    2,
+                    1,
+                    sharex=True,
+                    figsize=(FIGSIZE[0], FIGSIZE[1] * 0.6 + height),
+                    dpi=DPI,
+                    height_ratios=[FIGSIZE[1] * 0.6, height],
+                    layout="constrained",
+                )
+                owned_axes = [cast(Axes, spectrum_ax), cast(Axes, ax)]
+                self.mean_spectrum(
+                    ax=spectrum_ax,
+                    excluded_bands=excluded_bands,
+                    color="0.35",
+                    label="Mean ± SD",
+                )
+                spectrum_ax.set_xlabel("")
+                spectrum_ax.set_ylabel("Spectrum")
+            else:
+                _, ax = plt.subplots(
+                    figsize=(FIGSIZE[0], height), dpi=DPI, layout="constrained"
+                )
+                owned_axes = [ax]
+        assert ax is not None
+        colormap = plt.get_cmap(cmap) if isinstance(cmap, str) else cmap
+        if line_mode:
+            mappable = self._draw_strip_lines(
+                ax, values, is_mask, wvs, top_k, threshold, colormap, kwargs
+            )
+        else:
+            shading = _scale_rows(values, shared_scale)
+            mesh_kwargs = {
+                "cmap": colormap,
+                "vmin": 0,
+                "vmax": 1,
+                **normalize_kwargs(kwargs, QuadMesh),
+            }
+            mappable = ax.pcolormesh(
+                edges,
+                np.arange(n_rows + 1),
+                np.ma.masked_invalid(shading),
+                **mesh_kwargs,
+            )
+        self._stylize_plot(ax)
+        ax.grid(False, which="both")
+        ax.set_xlim(*sorted((float(edges[0]), float(edges[-1]))))
+        self._orient_spectral_axis(ax, index_axis=False)
+        ax.set_ylim(n_rows, 0)  # first row on top
+        ax.yaxis.set_minor_locator(NullLocator())
+        labels = [row[0] for row in rows]
+        if any(label is not None for label in labels):
+            ax.set_yticks(np.arange(n_rows) + 0.5)
+            ax.set_yticklabels(["" if lab is None else lab for lab in labels])
+        else:
+            ax.set_yticks([])
+        if colorbar:
+            # On our own figures the colorbar spans every panel, so the spectrum
+            # and the strip keep the same width and stay aligned
+            ax.figure.colorbar(
+                mappable,
+                ax=owned_axes if owned_axes else ax,
+                label="Relative importance",
+                pad=0.01,
+                fraction=0.02,
+            )
+        return ax
+
+    def _draw_strip_lines(
+        self,
+        ax: Axes,
+        values: np.ndarray,
+        is_mask: np.ndarray,
+        wavelengths: np.ndarray,
+        top_k: int | None,
+        threshold: float | None,
+        colormap: Any,
+        kwargs: dict[str, Any],
+    ) -> ScalarMappable:
+        """Draw each row's chosen wavelengths as vertical lines on a light strip."""
+        norm = Normalize(0, 1)
+        floor = 0.3  # lightest shade used for a drawn line
+        line_kwargs = {"linewidth": 1.5, **normalize_kwargs(kwargs, LineCollection)}
+        for r, (row, mask_row) in enumerate(zip(values, is_mask)):
+            ax.axhspan(r + 0.08, r + 0.92, color=colormap(0.04), linewidth=0)
+            finite = np.isfinite(row)
+            chosen = finite & (row > 0 if mask_row else finite)
+            if not mask_row:
+                if threshold is not None:
+                    chosen &= row >= threshold
+                if top_k is not None:
+                    ranked = np.argsort(np.where(finite, row, -np.inf))[::-1]
+                    top = np.zeros_like(chosen)
+                    top[ranked[: int(top_k)]] = True
+                    chosen &= top
+            idx = np.flatnonzero(chosen)
+            if not idx.size:
+                continue
+            peak = np.nanmax(row)
+            shade = (
+                np.ones(idx.size)
+                if mask_row or peak <= 0
+                else floor + (1 - floor) * row[idx] / peak
+            )
+            ax.vlines(
+                wavelengths[idx],
+                r + 0.08,
+                r + 0.92,
+                colors=colormap(shade),
+                **line_kwargs,
+            )
+        return ScalarMappable(norm=norm, cmap=colormap)
+
     @_styled_unless("ax")
     def plot_selected_bands(
         self,
@@ -306,31 +633,14 @@ class _Explain:
             The matplotlib axes with the plot
 
         """
-        if hasattr(support, "get_support"):
-            support = support.get_support()
-        support = np.asarray(support)
-        mask = np.zeros(self.dataset.n_features, dtype=bool)
-        if support.dtype == bool:
-            if support.shape != (self.dataset.n_features,):
-                raise SpectraXAIValueError(
-                    "support should have one value per input feature"
-                )
-            mask = support
-        else:
-            mask[support.astype(int)] = True
+        mask = self._support_mask(support)
         wavelengths = self._wavelengths()
         ax = self.mean_spectrum(ax=ax, excluded_bands=excluded_bands)
 
         order = np.argsort(wavelengths)
-        wvs, selected = wavelengths[order], mask[order]
-        # Each band spans half-way to its neighbours
-        mids = (wvs[1:] + wvs[:-1]) / 2
-        lower = np.concatenate(
-            ([wvs[0] - (mids[0] - wvs[0]) if mids.size else wvs[0] - 0.5], mids)
-        )
-        upper = np.concatenate(
-            (mids, [wvs[-1] + (wvs[-1] - mids[-1]) if mids.size else wvs[-1] + 0.5])
-        )
+        selected = mask[order]
+        edges = _band_edges(wavelengths[order])
+        lower, upper = edges[:-1], edges[1:]
         span_kwargs = {
             "color": "tab:orange",
             "alpha": 0.3,
@@ -344,6 +654,24 @@ class _Explain:
             ax.axvspan(float(lower[run[0]]), float(upper[run[-1]]), **span_kwargs)
             span_kwargs["label"] = None  # one legend entry
         return ax
+
+
+def _band_edges(wavelengths: np.ndarray) -> np.ndarray:
+    """Edges of bands centred on sorted ``wavelengths``, each half-way to the next."""
+    if wavelengths.size == 1:
+        return np.array([wavelengths[0] - 0.5, wavelengths[0] + 0.5])
+    mids = (wavelengths[1:] + wavelengths[:-1]) / 2
+    first = wavelengths[0] - (mids[0] - wavelengths[0])
+    last = wavelengths[-1] + (wavelengths[-1] - mids[-1])
+    return np.concatenate(([first], mids, [last]))
+
+
+def _scale_rows(values: np.ndarray, shared: bool) -> np.ndarray:
+    """Min–max scale each row of ``values`` (or all rows together) to [0, 1]."""
+    axis = None if shared else 1
+    low = np.nanmin(values, axis=axis, keepdims=True)
+    span = np.nanmax(values, axis=axis, keepdims=True) - low
+    return np.divide(values - low, span, out=np.zeros_like(values), where=span > 0)
 
 
 def _normalize_by_max(values: np.ndarray) -> np.ndarray:
@@ -944,21 +1272,6 @@ class PostHocAnalysis(_Explain):
 
         # Calculate SAGE values
         return estimator(self.dataset.X, self.dataset.Y)
-
-    def _importance_array(self, importance: Any) -> np.ndarray:
-        """Accept an importance array or a fitted `StandardModel`."""
-        if hasattr(importance, "feature_importance"):
-            values, _ = importance.feature_importance()
-            if values is None:
-                raise SpectraXAIValueError(
-                    "The model has no feature importance of its own; pass an array "
-                    "(e.g. from fit_and_predict(..., return_permutation_importance="
-                    "True))"
-                )
-            importance = values
-        importance = np.asarray(importance, dtype=float).ravel()
-        self._check_bar_array(importance)
-        return importance
 
     @_styled_unless("ax")
     def plot_importance_spectrum(
